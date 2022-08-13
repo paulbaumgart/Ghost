@@ -202,6 +202,11 @@ module.exports = async function ghost_head(options) { // eslint-disable-line cam
                         '\n    </script>\n');
                 }
             }
+
+            if (meta.accessCode) {
+                head.push('<meta name="access_code" content="' +
+                    escapeExpression(meta.accessCode) + '" />');
+            }
         }
 
         head.push('<meta name="generator" content="Ghost ' +
