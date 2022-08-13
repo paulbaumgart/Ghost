@@ -96,7 +96,7 @@ const privateBlogging = {
             name: 'ghost-private',
             maxAge: (3650 * 24 * 60 * 60 * 1000), // 10 years in ms
             signed: false,
-            sameSite: 'none'
+            sameSite: (req.protocol === 'https' ? 'none' : 'strict')
         })(req, res, next);
     },
 
