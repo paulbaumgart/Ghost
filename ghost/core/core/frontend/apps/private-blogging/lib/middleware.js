@@ -26,6 +26,16 @@ function verifySessionHash(salt, hash) {
     return hasher.digest('hex') === hash;
 }
 
+function verifyPublicAccessLink(req) {
+    if (!req || !req.path || !req.query || !req.query.access_code) {
+        return false;
+    }
+
+    let hasher = crypto.createHash('sha256');
+    hasher.update(req.path.replace(/\//g, '') + settingsCache.get('password'), 'utf8');
+    return hasher.digest('hex') === req.query.access_code;
+}
+
 function getRedirectUrl(query) {
     try {
         const redirect = decodeURIComponent(query.r || '/');
@@ -67,6 +77,16 @@ const privateBlogging = {
 
         // CASE: this is the /private/ page, continue (allow this to be rendered)
         if (req.path === `${privateRoute}`) {
+            return next();
+        }
+
+        // CASE: this is a request for an /assets/ page, continue (allow this to be rendered)
+        if (req.path.match(/^\/assets\//)) {
+            return next();
+        }
+
+        // CASE: this is a public access link for this specific URL
+        if (verifyPublicAccessLink(req)) {
             return next();
         }
 
