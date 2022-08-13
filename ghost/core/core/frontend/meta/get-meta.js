@@ -3,6 +3,7 @@ const urlUtils = require('../../shared/url-utils').default;
 const logging = require('@tryghost/logging');
 
 // These are in filename order
+const getAccessCode = require('./access-code');
 const getAuthorFacebook = require('./author-fb-url');
 const getAuthorImage = require('./author-image');
 const getAuthorUrl = require('./author-url');
@@ -28,6 +29,7 @@ const getUrl = require('./url');
 
 function getMetaData(data, root) {
     const metaData = {
+        accessCode: getAccessCode(data, settingsCache),
         url: getUrl(data, true),
         canonicalUrl: getCanonicalUrl(data),
         previousUrl: getPaginatedUrl('prev', data, true),
