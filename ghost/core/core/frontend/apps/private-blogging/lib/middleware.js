@@ -65,7 +65,7 @@ const privateBlogging = {
             name: 'ghost-private',
             maxAge: constants.ONE_YEAR_MS * 10,
             signed: false,
-            sameSite: 'none'
+            sameSite: (req.protocol === 'https' ? 'none' : 'strict')
         })(req, res, next);
     },
 
