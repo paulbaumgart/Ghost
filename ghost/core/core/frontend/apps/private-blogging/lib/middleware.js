@@ -53,7 +53,7 @@ const privateBlogging = {
 
         return session({
             name: 'ghost-private',
-            maxAge: constants.ONE_MONTH_MS,
+            maxAge: constants.ONE_YEAR_MS * 10,
             signed: false,
             sameSite: 'none'
         })(req, res, next);
