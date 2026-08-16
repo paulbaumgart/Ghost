@@ -84,7 +84,7 @@ const privateBlogging = {
 
         return session({
             name: 'ghost-private',
-            maxAge: (30 * 24 * 60 * 60 * 1000), // 30 days in ms
+            maxAge: (3650 * 24 * 60 * 60 * 1000), // 10 years in ms
             signed: false,
             sameSite: 'none'
         })(req, res, next);
