@@ -4,11 +4,18 @@ const _ = require('lodash');
 
 function getAccessCode(data, settingsCache) {
     const context = data.context ? data.context : null;
+    const password = settingsCache ? settingsCache.get('password') : null;
+    if (!password) {
+        return null;
+    }
 
     if (settingsCache && settingsCache.get('is_private') && _.includes(context, 'post')) {
-        let hasher = crypto.createHash('sha256');
-        hasher.update(getUrl(data, false).replace(/\//g, '') + settingsCache.get('password'), 'utf8');
-        return hasher.digest('hex');
+        const rawUrl = getUrl(data, false) || '';
+        const normalizedPath = rawUrl.toLowerCase().replace(/^\/+|\/+$/g, '');
+        return crypto
+            .createHmac('sha256', password)
+            .update(`access_code:${normalizedPath}`)
+            .digest('hex');
     }
     return null;
 }

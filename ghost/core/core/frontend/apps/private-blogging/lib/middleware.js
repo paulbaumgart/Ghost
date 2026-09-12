@@ -41,9 +41,24 @@ function verifyPublicAccessLink(req) {
         return false;
     }
 
-    let hasher = crypto.createHash('sha256');
-    hasher.update(req.path.replace(/\//g, '') + settingsCache.get('password'), 'utf8');
-    return hasher.digest('hex') === req.query.access_code;
+    const password = settingsCache ? settingsCache.get('password') : null;
+    if (!password) {
+        return false;
+    }
+
+    const normalizedPath = req.path.toLowerCase().replace(/^\/+|\/+$/g, '');
+    const expectedHash = crypto
+        .createHmac('sha256', password)
+        .update(`access_code:${normalizedPath}`)
+        .digest('hex');
+
+    const providedHash = String(req.query.access_code);
+    const expectedBuf = Buffer.from(expectedHash, 'utf8');
+    const providedBuf = Buffer.from(providedHash, 'utf8');
+    if (expectedBuf.length !== providedBuf.length) {
+        return false;
+    }
+    return crypto.timingSafeEqual(expectedBuf, providedBuf);
 }
 
 function getRedirectUrl(query) {
