@@ -49,6 +49,7 @@ jobs:
           file: ./Dockerfile.production
           target: full
           push: true
+          pull: true
           tags: |
             ghcr.io/paulbaumgart/ghost:latest
             ghcr.io/paulbaumgart/ghost:pb-custom
