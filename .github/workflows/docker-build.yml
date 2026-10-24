@@ -27,10 +27,42 @@ jobs:
           node-version: 24
           cache: 'pnpm'
 
-      - name: Build Admin Panel Assets
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Gate the image on the same typecheck/unit targets upstream CI uses, so a
+      # bad rebase or conflict resolution cannot be published and deployed.
+      - name: Typecheck Ghost
+        timeout-minutes: 20
+        run: pnpm nx run ghost:test:types
+        env:
+          FORCE_COLOR: 0
+          NX_SKIP_LOG_GROUPING: true
+          TZ: America/New_York
+
+      - name: Unit tests
+        timeout-minutes: 30
         run: |
-          pnpm install --frozen-lockfile
-          pnpm nx run @tryghost/admin:build
+          # Vitest occasionally crashes a worker on loaded runners; upstream
+          # retries up to 3 times. Nx caches anything that already passed.
+          for attempt in 1 2 3; do
+            if timeout 25m pnpm nx run ghost:test:unit; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "::warning::Unit tests attempt ${attempt} failed — retrying"
+            fi
+          done
+          echo "::error::Unit tests failed after 3 attempts"
+          exit 1
+        env:
+          FORCE_COLOR: 0
+          NX_SKIP_LOG_GROUPING: true
+          logging__level: fatal
+          TZ: America/New_York
+
+      - name: Build Admin Panel Assets
+        run: pnpm nx run @tryghost/admin:build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
