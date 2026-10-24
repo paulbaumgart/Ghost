@@ -1,551 +1,653 @@
-import AutomationCanvas, {EMAIL_STEP_QUERY_PARAM} from './components/canvas/automation-canvas';
-import AutomationHeader from './components/automation-header';
-import {useAutomationForEditing} from './hooks/use-automation-for-editing';
+import { HostLimitError } from '@tryghost/admin-x-framework/errors';
+import { useBrowseConfig, upgradeRoute } from '@tryghost/admin-x-framework/api/config';
+import { LimitModalContent } from '@/settings/api';
+import NewAutomation from './new-automation';
+import AutomationStatusDialog from './components/automation-status-dialog';
+import { TRIGGER_CANVAS_ID } from './components/canvas/nodes';
+import AutomationCanvas, { EMAIL_STEP_QUERY_PARAM } from './components/canvas/automation-canvas';
+import AutomationHeader, { type AutomationValidationAction } from './components/automation-header';
+import { useLimiter } from '@tryghost/admin-x-framework/hooks';
+import { useAutomationForEditing } from './hooks/use-automation-for-editing';
 import React from 'react';
-import {AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, type ButtonProps, LoadingIndicator} from '@tryghost/shade/components';
-import {useEditAutomation} from '@tryghost/admin-x-framework/api/automations';
-import type {AutomationDetail, AutomationStatus} from '@tryghost/admin-x-framework/api/automations';
-import {dequal} from 'dequal';
-import {isEmptyEmailLexical} from './utils';
-import {toast} from 'sonner';
-import {useBlocker} from 'react-router';
-import {useConfirmUnload, useParams} from '@tryghost/admin-x-framework';
-import type {AutomationEditState} from './types';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  type ButtonProps,
+  LoadingIndicator,
+} from '@tryghost/shade/components';
+import { DirtyConfirmDialog, useDirtyConfirmation } from '@tryghost/shade/patterns';
+import { useAddAutomation, useEditAutomation } from '@tryghost/admin-x-framework/api/automations';
+import type {
+  AutomationDetail,
+  AutomationStatus,
+} from '@tryghost/admin-x-framework/api/automations';
+import { dequal } from 'dequal';
+import { isEmptyEmailLexical } from './utils';
+import { toast } from 'sonner';
+import { useNavigate, useParams } from '@tryghost/admin-x-framework';
+import { navigateTo } from '@/utils/navigation';
+import { useUnsavedChangesGuard } from '@/hooks/use-unsaved-changes-guard';
+import type { AutomationEditState } from './types';
+import { isAutomationStatusActive } from './utils/is-automation-status-active';
+import { ScreenEntranceProvider } from '@/layout/screen-entrance-provider';
+
+const AUTOMATION_LIMITS = ['limitAutomations'] as const;
 
 const SUBJECT_REQUIRED_MESSAGE = 'Add a subject line.';
 const BODY_REQUIRED_MESSAGE = 'Add an email body.';
 const SUBJECT_AND_BODY_REQUIRED_MESSAGE = 'Add a subject line and email body.';
 
 const editableSlice = (automation: AutomationDetail) => ({
-    status: automation.status,
-    actions: automation.actions,
-    edges: automation.edges
+  name: automation.name,
+  description: automation.description,
+  status: automation.status,
+  trigger_tier_scope: automation.trigger_tier_scope,
+  trigger_tier_ids: automation.trigger_tier_ids ? [...automation.trigger_tier_ids].sort() : null,
+  actions: automation.actions,
+  edges: automation.edges,
 });
 
+const getTriggerErrors = (automation: AutomationDetail): Record<string, string> =>
+  automation.trigger_tier_scope === 'selected_paid' && !automation.trigger_tier_ids.length
+    ? { [TRIGGER_CANVAS_ID]: 'Select at least one paid tier.' }
+    : {};
+
 const isFailedEditState = (editState: AutomationEditState): boolean => {
-    return editState.phase === 'failed';
+  return editState.phase === 'failed';
 };
 
 const getActionErrors = (automation: AutomationDetail): Record<string, string> => {
-    const errors: Record<string, string> = {};
+  const errors: Record<string, string> = {};
 
-    for (const action of automation.actions) {
-        if (action.type !== 'send_email') {
-            continue;
-        }
-
-        const missingSubject = !action.data.email_subject.trim();
-        const missingBody = isEmptyEmailLexical(action.data.email_lexical);
-
-        if (missingSubject && missingBody) {
-            errors[action.id] = SUBJECT_AND_BODY_REQUIRED_MESSAGE;
-        } else if (missingSubject) {
-            errors[action.id] = SUBJECT_REQUIRED_MESSAGE;
-        } else if (missingBody) {
-            errors[action.id] = BODY_REQUIRED_MESSAGE;
-        }
+  for (const action of automation.actions) {
+    if (action.type !== 'send_email') {
+      continue;
     }
 
-    return errors;
+    const missingSubject = !action.data.email_subject.trim();
+    const missingBody = isEmptyEmailLexical(action.data.email_lexical);
+
+    if (missingSubject && missingBody) {
+      errors[action.id] = SUBJECT_AND_BODY_REQUIRED_MESSAGE;
+    } else if (missingSubject) {
+      errors[action.id] = SUBJECT_REQUIRED_MESSAGE;
+    } else if (missingBody) {
+      errors[action.id] = BODY_REQUIRED_MESSAGE;
+    }
+  }
+
+  return errors;
 };
 
-const AutomationEditorContent: React.FC<{automationId: string}> = ({automationId}) => {
-    const {automation, isError: isReadError} = useAutomationForEditing(automationId);
+const AutomationEditorContent: React.FC<{
+  automationId: string | null;
+  creation?: {
+    initialAutomation: AutomationDetail;
+    triggerTop?: number;
+    onCreated: (id: string) => void;
+  };
+}> = ({ automationId, creation }) => {
+  const navigate = useNavigate();
+  const addMutation = useAddAutomation();
+  const limiter = useLimiter({ limits: AUTOMATION_LIMITS });
+  const { data: configData } = useBrowseConfig();
+  const [limitError, setLimitError] = React.useState<HostLimitError | null>(null);
+  const { confirm: confirmUpgrade, dialogProps: upgradeDialogProps } = useDirtyConfirmation();
+  const { automation, isError: isReadError } = useAutomationForEditing(automationId);
 
-    const editMutation = useEditAutomation();
-    const [editState, setEditState] = React.useState<AutomationEditState>({phase: 'idle'});
-    const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
-    const [isEmailModalDirty, setIsEmailModalDirty] = React.useState(false);
-    const isEmailModalDirtyRef = React.useRef(false);
-    const navigationBlockerReasonRef = React.useRef<'automation' | 'email' | null>(null);
-    const isBlockedEmailNavigationLeavingEditorRef = React.useRef(false);
-
-    // Keep the saved snapshot separate from the live query result. Later query updates or errors
-    // must not redefine the dirty state or overwrite edits made during this editing session.
-    const [savedAutomation, setSavedAutomation] = React.useState<AutomationDetail | undefined>(undefined);
-    const [draft, setDraft] = React.useState<AutomationDetail | undefined>(undefined);
-    React.useEffect(() => {
-        if (!automation) {
-            return;
-        }
-
-        setSavedAutomation(currentAutomation => currentAutomation ?? automation);
-        setDraft(currentDraft => currentDraft ?? automation);
-    }, [automation]);
-    const isEditorLoading = !draft && !isReadError;
-    const isEditorError = !draft && isReadError;
-
-    // Only compare the fields the user can edit; server-stamped fields like `updated_at` would
-    // otherwise flip the dirty flag immediately after every successful publish.
-    const hasUnsavedChanges = !!draft
-        && !!savedAutomation
-        && !dequal(editableSlice(draft), editableSlice(savedAutomation));
-
-    const onDraftChange = (next: AutomationDetail) => {
-        setDraft(next);
-        setActionErrors((oldErrors) => {
-            if (Object.keys(oldErrors).length === 0) {
-                return oldErrors;
-            }
-
-            const nextErrors = getActionErrors(next);
-            return Object.fromEntries(
-                Object.entries(oldErrors).filter(([actionId]) => nextErrors[actionId])
-            );
-        });
-        setEditState(prev => (
-            isFailedEditState(prev) ? {phase: 'idle'} : prev
-        ));
-    };
-
-    const validateActionErrors = (automationToValidate: AutomationDetail, errorState: AutomationEditState): boolean => {
-        const nextActionErrors = getActionErrors(automationToValidate);
-        if (Object.keys(nextActionErrors).length > 0) {
-            setActionErrors(nextActionErrors);
-            setEditState(errorState);
-            toast.error('Automation needs a few details', {
-                description: 'Fix the highlighted steps and try again.'
-            });
-            return false;
-        }
-
-        return true;
-    };
-
-    const save = (statusToSave?: AutomationStatus) => {
-        if (!draft) {
-            throw new Error('Cannot edit an automation that has not loaded.');
-        }
-
-        let requestState: AutomationEditState;
-        let errorState: AutomationEditState;
-
-        const oldStatus = draft.status;
-        const newStatus = statusToSave ?? oldStatus;
-        const statusTransition: `${AutomationStatus} -> ${AutomationStatus}` = `${oldStatus} -> ${newStatus}`;
-        switch (statusTransition) {
-        case 'active -> active':
-            requestState = {phase: 'submitting', action: 'republish'};
-            errorState = {phase: 'failed', action: 'republish'};
-            break;
-        case 'inactive -> inactive':
-            requestState = {phase: 'submitting', action: 'save'};
-            errorState = {phase: 'failed', action: 'save'};
-            break;
-        case 'inactive -> active':
-            requestState = {phase: 'submitting', action: 'publish'};
-            errorState = {phase: 'failed', action: 'publish'};
-            break;
-        case 'active -> inactive':
-            requestState = {phase: 'submitting', action: 'unpublish'};
-            errorState = {phase: 'failed', action: 'unpublish'};
-            break;
-        default: {
-            const _exhaustive: never = statusTransition;
-            throw new Error(`Unhandled status transition: ${String(_exhaustive)}`);
-        }
-        }
-
-        if (newStatus === 'active' && !validateActionErrors(draft, errorState)) {
-            return;
-        }
-
-        setEditState(requestState);
-
-        editMutation.mutate(
-            {
-                id: draft.id,
-                status: newStatus,
-                actions: draft.actions,
-                edges: draft.edges
-            },
-            {
-                onSuccess: (response) => {
-                    const savedDraft = response.automations[0];
-                    setSavedAutomation(savedDraft);
-                    setDraft(savedDraft);
-                    setActionErrors({});
-                    setEditState({phase: 'idle'});
-                },
-                onError: (error) => {
-                    void error;
-                    const nextActionErrors = newStatus === 'active' ? getActionErrors(draft) : {};
-                    const hasActionErrors = Object.keys(nextActionErrors).length > 0;
-                    if (hasActionErrors) {
-                        setActionErrors(nextActionErrors);
-                    }
-
-                    setEditState(errorState);
-                    if (hasActionErrors) {
-                        toast.error('Automation needs a few details', {
-                            description: 'Fix the highlighted steps and try again.'
-                        });
-                    } else {
-                        toast.error('Automation couldn’t be saved');
-                    }
-                }
-            }
-        );
-    };
-
-    const isConfirmPublishAlertOpen = editState.action === 'publish';
-    const isConfirmUnpublishAlertOpen = editState.action === 'unpublish';
-    const isConfirmRepublishAlertOpen = editState.action === 'republish';
-    const isEditRequestActive = editState.phase === 'submitting';
-    let isSaveButtonEnabled = !!draft && draft.actions.length > 0 && draft.status === 'inactive' && hasUnsavedChanges;
-    let saveButtonVariant: ButtonProps['variant'] = 'outline';
-    let saveButtonChildren: React.ReactNode = 'Save';
-    let isPublishButtonEnabled = !!draft && draft.actions.length > 0 && (draft.status === 'inactive' || hasUnsavedChanges);
-    const publishButtonVariant: ButtonProps['variant'] = 'default';
-    const publishButtonChildren: React.ReactNode = draft?.status === 'active'
-        ? (hasUnsavedChanges ? 'Publish changes' : 'Published')
-        : 'Publish';
-    let isTurnOffButtonEnabled = true;
-    let turnOffButtonChildren: React.ReactNode = 'Turn off';
-    let isPublishConfirmButtonEnabled = true;
-    let publishConfirmButtonVariant: ButtonProps['variant'] = 'default';
-    let publishConfirmButtonChildren: React.ReactNode = 'Publish';
-    let isRepublishButtonEnabled = true;
-    let republishButtonVariant: ButtonProps['variant'] = 'default';
-    let republishButtonChildren: React.ReactNode = 'Publish changes';
-    switch (editState.phase) {
-    case 'idle':
-        break;
-    case 'submitting':
-        isSaveButtonEnabled = false;
-        isPublishButtonEnabled = false;
-        isTurnOffButtonEnabled = false;
-
-        switch (editState.action) {
-        case 'save':
-            saveButtonChildren = (
-                <>
-                    <LoadingIndicator size='sm' />
-                    <span className='sr-only'>Saving...</span>
-                </>
-            );
-            break;
-        case 'publish':
-            isPublishConfirmButtonEnabled = false;
-            publishConfirmButtonChildren = (
-                <>
-                    <LoadingIndicator color='light' size='sm' />
-                    <span className='sr-only'>Publishing...</span>
-                </>
-            );
-            break;
-        case 'republish':
-            isRepublishButtonEnabled = false;
-            republishButtonChildren = (
-                <>
-                    <LoadingIndicator color='light' size='sm' />
-                    <span className='sr-only'>Publishing...</span>
-                </>
-            );
-            break;
-        case 'unpublish':
-            turnOffButtonChildren = (
-                <>
-                    <LoadingIndicator color='light' size='sm' />
-                    <span className='sr-only'>Turning off...</span>
-                </>
-            );
-            break;
-        }
-        break;
-    case 'confirming':
-        switch (editState.action) {
-        case 'publish':
-            isSaveButtonEnabled = false;
-            isPublishButtonEnabled = false;
-            break;
-        case 'republish':
-            isPublishButtonEnabled = false;
-            isTurnOffButtonEnabled = false;
-            break;
-        case 'unpublish':
-            isSaveButtonEnabled = false;
-            isPublishButtonEnabled = false;
-            isTurnOffButtonEnabled = false;
-            break;
-        }
-        break;
-    case 'failed':
-        switch (editState.action) {
-        case 'save':
-            saveButtonVariant = 'destructive';
-            saveButtonChildren = 'Retry';
-            break;
-        case 'publish':
-            isSaveButtonEnabled = false;
-            isPublishButtonEnabled = false;
-            publishConfirmButtonVariant = 'destructive';
-            publishConfirmButtonChildren = 'Retry';
-            break;
-        case 'republish':
-            isPublishButtonEnabled = false;
-            isTurnOffButtonEnabled = false;
-            republishButtonVariant = 'destructive';
-            republishButtonChildren = 'Retry';
-            break;
-        case 'unpublish':
-            isTurnOffButtonEnabled = true;
-            turnOffButtonChildren = 'Retry';
-            break;
-        }
-        break;
-    default: {
-        const _exhaustive: never = editState;
-        throw new Error(`Unhandled edit state: ${String(_exhaustive)}`);
-    }
-    }
-
-    const onConfirmUnpublishOpenChange = (open: boolean): void => {
-        setEditState((oldEditState) => {
-            switch (oldEditState.phase) {
-            case 'confirming':
-            case 'failed':
-                return oldEditState.action === 'unpublish' && !open ? {phase: 'idle'} : oldEditState;
-            case 'idle':
-                return open ? {phase: 'confirming', action: 'unpublish'} : oldEditState;
-            default:
-                return oldEditState;
-            }
-        });
-    };
-
-    const onConfirmPublishOpenChange = (open: boolean): void => {
-        setEditState((oldEditState) => {
-            switch (oldEditState.phase) {
-            case 'confirming':
-            case 'failed':
-                return oldEditState.action === 'publish' && !open ? {phase: 'idle'} : oldEditState;
-            case 'idle':
-                return open ? {phase: 'confirming', action: 'publish'} : oldEditState;
-            default:
-                return oldEditState;
-            }
-        });
-    };
-
-    const onConfirmRepublishOpenChange = (open: boolean): void => {
-        setEditState((oldEditState) => {
-            switch (oldEditState.phase) {
-            case 'confirming':
-            case 'failed':
-                return oldEditState.action === 'republish' && !open ? {phase: 'idle'} : oldEditState;
-            case 'idle':
-                return open ? {phase: 'confirming', action: 'republish'} : oldEditState;
-            default:
-                return oldEditState;
-            }
-        });
-    };
-
-    const onPublish = (): void => {
-        if (!draft) {
-            throw new Error('Cannot publish an automation that has not loaded.');
-        }
-
-        switch (draft.status) {
-        case 'active':
-            if (!validateActionErrors(draft, {phase: 'idle'})) {
-                return;
-            }
-            setEditState({phase: 'confirming', action: 'republish'});
-            break;
-        case 'inactive':
-            if (!validateActionErrors(draft, {phase: 'idle'})) {
-                return;
-            }
-            setEditState({phase: 'confirming', action: 'publish'});
-            break;
-        default: {
-            const _exhaustive: never = draft.status;
-            throw new Error(`Unhandled status: ${String(_exhaustive)}`);
-        }
-        }
-    };
-
-    useConfirmUnload(isEditRequestActive || hasUnsavedChanges || isEmailModalDirty);
-    const navigationBlocker = useBlocker(({currentLocation, nextLocation}) => {
-        const currentEmailStep = new URLSearchParams(currentLocation.search).get(EMAIL_STEP_QUERY_PARAM);
-        const nextEmailStep = new URLSearchParams(nextLocation.search).get(EMAIL_STEP_QUERY_PARAM);
-        if (isEmailModalDirtyRef.current && currentEmailStep && currentEmailStep !== nextEmailStep) {
-            navigationBlockerReasonRef.current = 'email';
-            isBlockedEmailNavigationLeavingEditorRef.current = currentLocation.pathname !== nextLocation.pathname;
-            return true;
-        }
-
-        if (hasUnsavedChanges && currentLocation.pathname !== nextLocation.pathname) {
-            navigationBlockerReasonRef.current = 'automation';
-            isBlockedEmailNavigationLeavingEditorRef.current = false;
-            return true;
-        }
-
-        navigationBlockerReasonRef.current = null;
-        isBlockedEmailNavigationLeavingEditorRef.current = false;
-        return false;
+  const editMutation = useEditAutomation();
+  const [validationFeedback, setValidationFeedback] =
+    React.useState<AutomationValidationAction | null>(null);
+  const [editState, setEditState] = React.useState<AutomationEditState>({ phase: 'idle' });
+  const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null);
+  // Invalid text stays in the input, outside the API-ready draft, but must block saving it.
+  const [invalidWaitIds, setInvalidWaitIds] = React.useState<Set<string>>(new Set());
+  const onWaitValidityChange = React.useCallback((stepId: string, valid: boolean) => {
+    setValidationFeedback(null);
+    setInvalidWaitIds((current) => {
+      if (current.has(stepId) === !valid) {
+        return current;
+      }
+      const next = new Set(current);
+      if (valid) {
+        next.delete(stepId);
+      } else {
+        next.add(stepId);
+      }
+      return next;
     });
-    const isEmailNavigationBlocked = navigationBlocker.state === 'blocked' && navigationBlockerReasonRef.current === 'email';
-    const isAutomationNavigationBlocked = navigationBlocker.state === 'blocked' && navigationBlockerReasonRef.current === 'automation';
+  }, []);
+  const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
+  const [isEmailModalDirty, setIsEmailModalDirty] = React.useState(false);
+  const isEmailModalDirtyRef = React.useRef(false);
+  const isBlockedEmailNavigationLeavingEditorRef = React.useRef(false);
 
-    const onConfirmDiscardOpenChange = (open: boolean): void => {
-        if (!open && isAutomationNavigationBlocked) {
-            navigationBlocker.reset();
-        }
+  // Keep the saved snapshot separate from the live query result. Later query updates or errors
+  // must not redefine the dirty state or overwrite edits made during this editing session.
+  const [savedAutomation, setSavedAutomation] = React.useState<AutomationDetail | undefined>(
+    undefined,
+  );
+  const [draft, setDraft] = React.useState<AutomationDetail | undefined>(
+    creation?.initialAutomation,
+  );
+  React.useEffect(() => {
+    if (!automation) {
+      return;
+    }
+
+    setSavedAutomation((currentAutomation) => currentAutomation ?? automation);
+    setDraft((currentDraft) => currentDraft ?? automation);
+  }, [automation]);
+  const isEditorLoading = !draft && !isReadError;
+  const isEditorError = !draft && isReadError;
+
+  // Only compare the fields the user can edit; server-stamped fields like `updated_at` would
+  // otherwise flip the dirty flag immediately after every successful publish.
+  const isNew = !!draft && !draft.id;
+  const hasUnsavedChanges =
+    isNew ||
+    invalidWaitIds.size > 0 ||
+    (!!draft && !!savedAutomation && !dequal(editableSlice(draft), editableSlice(savedAutomation)));
+
+  const onDraftChange = (next: AutomationDetail) => {
+    setValidationFeedback(null);
+    setDraft(next);
+    setInvalidWaitIds((current) => {
+      const remaining = new Set(
+        [...current].filter((id) => next.actions.some((action) => action.id === id)),
+      );
+      return remaining.size === current.size ? current : remaining;
+    });
+    setActionErrors((oldErrors) => {
+      if (Object.keys(oldErrors).length === 0) {
+        return oldErrors;
+      }
+
+      const nextErrors = { ...getActionErrors(next), ...getTriggerErrors(next) };
+      return Object.fromEntries(
+        Object.entries(oldErrors).filter(([actionId]) => nextErrors[actionId]),
+      );
+    });
+    setEditState((prev) => (isFailedEditState(prev) ? { phase: 'idle' } : prev));
+  };
+
+  const validateForAction = (
+    automationToValidate: AutomationDetail,
+    action: AutomationValidationAction,
+  ): boolean => {
+    setValidationFeedback(null);
+    if (!automationToValidate.name.trim()) {
+      toast.error('Add an automation name.');
+      return false;
+    }
+    const nextActionErrors = {
+      ...(action === 'publish' ? getActionErrors(automationToValidate) : {}),
+      ...getTriggerErrors(automationToValidate),
+    };
+    if (Object.keys(nextActionErrors).length > 0 || invalidWaitIds.size > 0) {
+      setActionErrors(nextActionErrors);
+      setEditState({ phase: 'idle' });
+      setValidationFeedback(action);
+      return false;
+    }
+
+    return true;
+  };
+
+  const save = async (statusToSave?: AutomationStatus) => {
+    if (!draft) {
+      throw new Error('Cannot edit an automation that has not loaded.');
+    }
+
+    let validationAction: AutomationValidationAction;
+    let requestState: AutomationEditState;
+    let errorState: AutomationEditState;
+
+    const oldStatus = draft.status;
+    const newStatus = statusToSave ?? oldStatus;
+    const statusTransition: `${boolean} -> ${boolean}` = `${isAutomationStatusActive(oldStatus)} -> ${isAutomationStatusActive(newStatus)}`;
+    switch (statusTransition) {
+      case 'true -> true':
+        validationAction = 'publish';
+        requestState = { phase: 'submitting', action: 'republish' };
+        errorState = { phase: 'failed', action: 'republish' };
+        break;
+      case 'false -> false':
+        validationAction = 'save';
+        requestState = { phase: 'submitting', action: 'save' };
+        errorState = { phase: 'failed', action: 'save' };
+        break;
+      case 'false -> true':
+        validationAction = 'publish';
+        requestState = { phase: 'submitting', action: 'publish' };
+        errorState = { phase: 'failed', action: 'publish' };
+        break;
+      case 'true -> false':
+        validationAction = 'unpublish';
+        requestState = { phase: 'submitting', action: 'unpublish' };
+        errorState = { phase: 'failed', action: 'unpublish' };
+        break;
+      default: {
+        const _exhaustive: never = statusTransition;
+        throw new Error(`Unhandled status transition: ${String(_exhaustive)}`);
+      }
+    }
+
+    if (!validateForAction(draft, validationAction)) {
+      return;
+    }
+
+    const handleSaveError = (error: unknown) => {
+      if (error instanceof HostLimitError) {
+        setEditState({ phase: 'idle' });
+        setLimitError(error);
+        return;
+      }
+      setEditState(errorState);
+      toast.error('Automation couldn’t be saved');
     };
 
-    const onEmailDirtyChange = React.useCallback((dirty: boolean) => {
-        isEmailModalDirtyRef.current = dirty;
-        setIsEmailModalDirty(dirty);
-    }, []);
+    setEditState(requestState);
 
-    return (
-        <div className='fixed inset-0 z-50 flex flex-col bg-background' data-testid='automation-editor'>
-            <AutomationHeader
-                automation={draft}
-                isLoadingAutomation={isEditorLoading}
-                isPublishButtonEnabled={isPublishButtonEnabled}
-                isSaveButtonEnabled={isSaveButtonEnabled}
-                isTurnOffButtonEnabled={isTurnOffButtonEnabled}
-                publishButtonChildren={publishButtonChildren}
-                publishButtonVariant={publishButtonVariant}
-                saveButtonChildren={saveButtonChildren}
-                saveButtonVariant={saveButtonVariant}
-                onPublish={onPublish}
-                onSave={() => save()}
-                onTurnOff={() => setEditState({phase: 'confirming', action: 'unpublish'})}
-            />
+    // An existing active automation consumes its slot already. New active automations
+    // and inactive-to-active edits need a fresh count before sending the mutation.
+    if (
+      newStatus === 'active' &&
+      (isNew || savedAutomation?.status !== 'active') &&
+      limiter.isLimited('limitAutomations')
+    ) {
+      try {
+        await limiter.errorIfWouldGoOverLimit('limitAutomations');
+      } catch (error) {
+        handleSaveError(error);
+        return;
+      }
+    }
 
-            <AutomationCanvas
-                actionErrors={actionErrors}
-                automation={draft}
-                isEmailNavigationBlocked={isEmailNavigationBlocked}
-                isError={isEditorError}
-                isLoading={isEditorLoading}
-                onChange={onDraftChange}
-                onDiscardBlockedEmailNavigation={(closeEmailModal) => {
-                    onEmailDirtyChange(false);
-                    if (isBlockedEmailNavigationLeavingEditorRef.current) {
-                        isBlockedEmailNavigationLeavingEditorRef.current = false;
-                        navigationBlocker.reset?.();
-                        closeEmailModal();
-                        return;
-                    }
-
-                    isBlockedEmailNavigationLeavingEditorRef.current = false;
-                    navigationBlocker.proceed?.();
-                }}
-                onEmailDirtyChange={onEmailDirtyChange}
-                onKeepEditingAfterBlockedEmailNavigation={() => {
-                    isBlockedEmailNavigationLeavingEditorRef.current = false;
-                    navigationBlocker.reset?.();
-                }}
-            />
-
-            <AlertDialog
-                open={isAutomationNavigationBlocked}
-                onOpenChange={onConfirmDiscardOpenChange}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Your changes will be lost if you leave this automation.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Keep working</AlertDialogCancel>
-                        <Button
-                            variant='destructive'
-                            onClick={() => navigationBlocker.proceed?.()}
-                        >
-                            Discard changes
-                        </Button>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <AlertDialog
-                open={isConfirmPublishAlertOpen}
-                onOpenChange={onConfirmPublishOpenChange}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Start your automation?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Once published, your automation goes live. Any member who meets the trigger will be enrolled automatically.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={isEditRequestActive}>Cancel</AlertDialogCancel>
-                        <Button
-                            disabled={!isPublishConfirmButtonEnabled}
-                            variant={publishConfirmButtonVariant}
-                            onClick={() => save('active')}
-                        >
-                            {publishConfirmButtonChildren}
-                        </Button>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <AlertDialog
-                open={isConfirmUnpublishAlertOpen}
-                onOpenChange={onConfirmUnpublishOpenChange}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Turn off automation?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Your automation will no longer run, and any members currently in progress will be removed.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={isEditRequestActive}>Cancel</AlertDialogCancel>
-                        <Button
-                            disabled={isEditRequestActive}
-                            variant={editState.phase === 'failed' && editState.action === 'unpublish' ? 'destructive' : 'default'}
-                            onClick={() => save('inactive')}
-                        >
-                            {turnOffButtonChildren}
-                        </Button>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <AlertDialog
-                open={isConfirmRepublishAlertOpen}
-                onOpenChange={onConfirmRepublishOpenChange}
-            >
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Update your automation?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Once published, your changes apply immediately to members already in progress and to any new members who enter the automation.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel disabled={isEditRequestActive}>Cancel</AlertDialogCancel>
-                        <Button
-                            disabled={!isRepublishButtonEnabled}
-                            variant={republishButtonVariant}
-                            onClick={() => save()}
-                        >
-                            {republishButtonChildren}
-                        </Button>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-        </div>
+    const mutation = isNew ? addMutation : editMutation;
+    mutation.mutate(
+      { ...draft, status: newStatus },
+      {
+        onSuccess: (response) => {
+          const savedDraft = response.automations[0];
+          setSavedAutomation(savedDraft);
+          setDraft(savedDraft);
+          setActionErrors({});
+          setEditState({ phase: 'idle' });
+          if (isNew) {
+            creation?.onCreated(savedDraft.id);
+            bypassNextNavigation();
+            navigate(`/automations/${savedDraft.id}`, { replace: true });
+          }
+        },
+        // Another publisher can take the final slot after the frontend check.
+        onError: handleSaveError,
+      },
     );
+  };
+
+  const isConfirmPublishAlertOpen = editState.action === 'publish';
+  const isConfirmUnpublishAlertOpen = editState.action === 'unpublish';
+  const isConfirmRepublishAlertOpen = editState.action === 'republish';
+  const isEditRequestActive = editState.phase === 'submitting';
+  let isSaveButtonEnabled = !!draft && !isAutomationStatusActive(draft.status) && hasUnsavedChanges;
+  let saveButtonVariant: ButtonProps['variant'] = 'outline';
+  let saveButtonChildren: React.ReactNode = 'Save';
+  let isPublishButtonEnabled =
+    !!draft &&
+    draft.actions.length > 0 &&
+    (!isAutomationStatusActive(draft.status) || hasUnsavedChanges);
+  const publishButtonVariant: ButtonProps['variant'] = 'default';
+  const publishButtonChildren: React.ReactNode =
+    draft?.status === 'active' ? (hasUnsavedChanges ? 'Publish changes' : 'Published') : 'Publish';
+  let isTurnOffButtonEnabled = true;
+  let isRepublishButtonEnabled = true;
+  let republishButtonVariant: ButtonProps['variant'] = 'default';
+  let republishButtonChildren: React.ReactNode = 'Publish changes';
+  switch (editState.phase) {
+    case 'idle':
+      break;
+    case 'submitting':
+      isSaveButtonEnabled = false;
+      isPublishButtonEnabled = false;
+      isTurnOffButtonEnabled = false;
+
+      switch (editState.action) {
+        case 'save':
+          saveButtonChildren = (
+            <>
+              <LoadingIndicator size="sm" />
+              <span className="sr-only">Saving...</span>
+            </>
+          );
+          break;
+        case 'publish':
+          break;
+        case 'republish':
+          isRepublishButtonEnabled = false;
+          republishButtonChildren = (
+            <>
+              <LoadingIndicator color="light" size="sm" />
+              <span className="sr-only">Publishing...</span>
+            </>
+          );
+          break;
+        case 'unpublish':
+          break;
+      }
+      break;
+    case 'confirming':
+      switch (editState.action) {
+        case 'publish':
+          isSaveButtonEnabled = false;
+          isPublishButtonEnabled = false;
+          break;
+        case 'republish':
+          isPublishButtonEnabled = false;
+          isTurnOffButtonEnabled = false;
+          break;
+        case 'unpublish':
+          isSaveButtonEnabled = false;
+          isPublishButtonEnabled = false;
+          isTurnOffButtonEnabled = false;
+          break;
+      }
+      break;
+    case 'failed':
+      switch (editState.action) {
+        case 'save':
+          saveButtonVariant = 'destructive';
+          saveButtonChildren = 'Retry';
+          break;
+        case 'publish':
+          isSaveButtonEnabled = false;
+          isPublishButtonEnabled = false;
+          break;
+        case 'republish':
+          isPublishButtonEnabled = false;
+          isTurnOffButtonEnabled = false;
+          republishButtonVariant = 'destructive';
+          republishButtonChildren = 'Retry';
+          break;
+        case 'unpublish':
+          isTurnOffButtonEnabled = true;
+          break;
+      }
+      break;
+    default: {
+      const _exhaustive: never = editState;
+      throw new Error(`Unhandled edit state: ${String(_exhaustive)}`);
+    }
+  }
+
+  const onConfirmUnpublishOpenChange = (open: boolean): void => {
+    setEditState((oldEditState) => {
+      switch (oldEditState.phase) {
+        case 'confirming':
+        case 'failed':
+          return oldEditState.action === 'unpublish' && !open ? { phase: 'idle' } : oldEditState;
+        case 'idle':
+          return open ? { phase: 'confirming', action: 'unpublish' } : oldEditState;
+        default:
+          return oldEditState;
+      }
+    });
+  };
+
+  const onConfirmPublishOpenChange = (open: boolean): void => {
+    setEditState((oldEditState) => {
+      switch (oldEditState.phase) {
+        case 'confirming':
+        case 'failed':
+          return oldEditState.action === 'publish' && !open ? { phase: 'idle' } : oldEditState;
+        case 'idle':
+          return open ? { phase: 'confirming', action: 'publish' } : oldEditState;
+        default:
+          return oldEditState;
+      }
+    });
+  };
+
+  const onConfirmRepublishOpenChange = (open: boolean): void => {
+    setEditState((oldEditState) => {
+      switch (oldEditState.phase) {
+        case 'confirming':
+        case 'failed':
+          return oldEditState.action === 'republish' && !open ? { phase: 'idle' } : oldEditState;
+        case 'idle':
+          return open ? { phase: 'confirming', action: 'republish' } : oldEditState;
+        default:
+          return oldEditState;
+      }
+    });
+  };
+
+  const onPublish = (): void => {
+    if (!draft) {
+      throw new Error('Cannot publish an automation that has not loaded.');
+    }
+
+    if (!validateForAction(draft, 'publish')) {
+      return;
+    }
+
+    switch (draft.status) {
+      case 'active':
+        setEditState({ phase: 'confirming', action: 'republish' });
+        break;
+      case 'inactive':
+      case 'archived':
+        setEditState({ phase: 'confirming', action: 'publish' });
+        break;
+      default: {
+        const _exhaustive: never = draft.status;
+        throw new Error(`Unhandled status: ${String(_exhaustive)}`);
+      }
+    }
+  };
+
+  // The dirty email modal claims navigations that change its `emailStep`
+  // query param (closing the modal, back button, leaving the editor) so the
+  // canvas can run its own discard flow instead of the page-level dialog.
+  const {
+    dialogProps: discardDialogProps,
+    interceptedNavigation,
+    bypassNextNavigation,
+  } = useUnsavedChangesGuard({
+    when: hasUnsavedChanges || isEmailModalDirty,
+    confirmUnloadWhen: isEditRequestActive || hasUnsavedChanges || isEmailModalDirty,
+    interceptNavigation: ({ currentLocation, nextLocation }) => {
+      const currentEmailStep = new URLSearchParams(currentLocation.search).get(
+        EMAIL_STEP_QUERY_PARAM,
+      );
+      const nextEmailStep = new URLSearchParams(nextLocation.search).get(EMAIL_STEP_QUERY_PARAM);
+      if (isEmailModalDirtyRef.current && currentEmailStep && currentEmailStep !== nextEmailStep) {
+        isBlockedEmailNavigationLeavingEditorRef.current =
+          currentLocation.pathname !== nextLocation.pathname;
+        return true;
+      }
+
+      isBlockedEmailNavigationLeavingEditorRef.current = false;
+      return false;
+    },
+  });
+  const isEmailNavigationBlocked = interceptedNavigation.isBlocked;
+
+  const onEmailDirtyChange = React.useCallback((dirty: boolean) => {
+    isEmailModalDirtyRef.current = dirty;
+    setIsEmailModalDirty(dirty);
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-background"
+      data-sentry-mask="true"
+      data-testid="automation-editor"
+    >
+      <AutomationHeader
+        automation={draft}
+        isLoadingAutomation={isEditorLoading}
+        isPublishButtonEnabled={isPublishButtonEnabled && !selectedRunId}
+        isSaveButtonEnabled={isSaveButtonEnabled && !selectedRunId}
+        isTurnOffButtonEnabled={isTurnOffButtonEnabled && !selectedRunId}
+        publishButtonChildren={publishButtonChildren}
+        publishButtonVariant={publishButtonVariant}
+        saveButtonChildren={saveButtonChildren}
+        saveButtonVariant={saveButtonVariant}
+        validationFeedback={selectedRunId ? null : validationFeedback}
+        onDismissValidationFeedback={() => setValidationFeedback(null)}
+        onNameChange={
+          !selectedRunId && draft ? (name) => onDraftChange({ ...draft, name }) : undefined
+        }
+        onPublish={onPublish}
+        onSave={() => void save()}
+        onTurnOff={() => {
+          if (draft && !validateForAction(draft, 'unpublish')) {
+            return;
+          }
+          setValidationFeedback(null);
+          setEditState({ phase: 'confirming', action: 'unpublish' });
+        }}
+      />
+
+      <AutomationCanvas
+        actionErrors={actionErrors}
+        automation={draft}
+        initialSidebar={
+          creation
+            ? 'closed'
+            : !draft || !configData
+              ? 'unknown'
+              : draft.status === 'active' && configData.config.stats
+                ? 'performance'
+                : 'closed'
+        }
+        initialTriggerTop={creation?.triggerTop}
+        isEmailNavigationBlocked={isEmailNavigationBlocked}
+        isError={isEditorError}
+        isLoading={isEditorLoading}
+        savedTriggerTierIds={savedAutomation?.trigger_tier_ids ?? []}
+        selectedRunId={selectedRunId}
+        onChange={onDraftChange}
+        onDiscardBlockedEmailNavigation={(closeEmailModal) => {
+          onEmailDirtyChange(false);
+          if (isBlockedEmailNavigationLeavingEditorRef.current) {
+            isBlockedEmailNavigationLeavingEditorRef.current = false;
+            interceptedNavigation.reset();
+            closeEmailModal();
+            return;
+          }
+
+          isBlockedEmailNavigationLeavingEditorRef.current = false;
+          interceptedNavigation.proceed();
+        }}
+        onEmailDirtyChange={onEmailDirtyChange}
+        onKeepEditingAfterBlockedEmailNavigation={() => {
+          isBlockedEmailNavigationLeavingEditorRef.current = false;
+          interceptedNavigation.reset();
+        }}
+        onSelectRun={setSelectedRunId}
+        onWaitValidityChange={onWaitValidityChange}
+      />
+
+      <DirtyConfirmDialog {...discardDialogProps} />
+      <DirtyConfirmDialog {...upgradeDialogProps} />
+
+      {limitError && (
+        <LimitModalContent
+          prompt={
+            limitError.data?.errors[0]?.context ||
+            limitError.data?.errors[0]?.message ||
+            limitError.message
+          }
+          onOk={() => {
+            setLimitError(null);
+            confirmUpgrade(hasUnsavedChanges || isEmailModalDirty, () => {
+              navigateTo(upgradeRoute(configData?.config));
+            });
+          }}
+          onRemove={() => setLimitError(null)}
+        />
+      )}
+      <AutomationStatusDialog
+        isError={editState.phase === 'failed'}
+        isPending={isEditRequestActive}
+        open={isConfirmPublishAlertOpen || isConfirmUnpublishAlertOpen}
+        status={isConfirmUnpublishAlertOpen ? 'inactive' : 'active'}
+        onConfirm={() => void save(isConfirmUnpublishAlertOpen ? 'inactive' : 'active')}
+        onOpenChange={
+          isConfirmUnpublishAlertOpen ? onConfirmUnpublishOpenChange : onConfirmPublishOpenChange
+        }
+      />
+
+      <AlertDialog open={isConfirmRepublishAlertOpen} onOpenChange={onConfirmRepublishOpenChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Update your automation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Once published, your changes apply immediately to members already in progress and to
+              any new members who enter the automation.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isEditRequestActive}>Cancel</AlertDialogCancel>
+            <Button
+              disabled={!isRepublishButtonEnabled}
+              variant={republishButtonVariant}
+              onClick={() => void save()}
+            >
+              {republishButtonChildren}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
 };
 
 const AutomationEditor: React.FC = () => {
-    const {id: automationId = ''} = useParams<{id: string}>();
+  const { id: automationId = '' } = useParams<{ id: string }>();
 
-    return <AutomationEditorContent key={automationId} automationId={automationId} />;
+  // Keep the creation session mounted when its first save replaces /new with the server ID.
+  const [session, setSession] = React.useState({
+    routeId: automationId,
+    createdId: null as string | null,
+    key: 0,
+  });
+  if (automationId !== session.routeId) {
+    const isFirstSave = session.routeId === 'new' && automationId === session.createdId;
+    setSession({
+      routeId: automationId,
+      createdId: isFirstSave ? session.createdId : null,
+      key: isFirstSave ? session.key : session.key + 1,
+    });
+  }
+  return (
+    <ScreenEntranceProvider>
+      {automationId === 'new' || automationId === session.createdId ? (
+        <NewAutomation key={session.key}>
+          {(initialAutomation, triggerTop) => (
+            <AutomationEditorContent
+              automationId={null}
+              creation={{
+                initialAutomation,
+                triggerTop,
+                onCreated: (createdId) => setSession((current) => ({ ...current, createdId })),
+              }}
+            />
+          )}
+        </NewAutomation>
+      ) : (
+        <AutomationEditorContent key={automationId} automationId={automationId} />
+      )}
+    </ScreenEntranceProvider>
+  );
 };
 
 export default AutomationEditor;

@@ -27,12 +27,12 @@ describe('renderers/product-renderer', function () {
     }
 
     describe('web', function () {
-        it('matches snapshot for default test data', function () {
+        it('matches snapshot for default test data', async function () {
             const result = renderForWeb(getTestData());
 
             assert.ok(result.html);
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <div class="kg-card kg-product-card">
                     <div class="kg-product-card-container">
                         <img src="/content/images/2022/11/koenig-lexical.jpg" width="200" height="100" class="kg-product-card-image" loading="lazy">
@@ -79,7 +79,7 @@ describe('renderers/product-renderer', function () {
             assert.equal(result.html, '');
         });
 
-        it('renders with only a title', function () {
+        it('renders with only a title', async function () {
             const result = renderForWeb({
                 productImageSrc: '',
                 productImageWidth: null,
@@ -93,7 +93,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: ''
             });
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <div class="kg-card kg-product-card">
                     <div class="kg-product-card-container">
                         <div class="kg-product-card-title-container">
@@ -105,7 +105,7 @@ describe('renderers/product-renderer', function () {
             `);
         });
 
-        it('renders with only a description', function () {
+        it('renders with only a description', async function () {
             const result = renderForWeb({
                 productImageSrc: '',
                 productImageWidth: null,
@@ -119,7 +119,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: ''
             });
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <div class="kg-card kg-product-card">
                     <div class="kg-product-card-container">
                         <div class="kg-product-card-title-container">
@@ -131,7 +131,7 @@ describe('renderers/product-renderer', function () {
             `);
         });
 
-        it('renders with only a button', function () {
+        it('renders with only a button', async function () {
             const result = renderForWeb({
                 productImageSrc: '',
                 productImageWidth: null,
@@ -145,7 +145,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: 'https://example.com/product/ok'
             });
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <div class="kg-card kg-product-card">
                     <div class="kg-product-card-container">
                         <div class="kg-product-card-title-container">
@@ -160,10 +160,10 @@ describe('renderers/product-renderer', function () {
     });
 
     describe('email', function () {
-        it('matches snapshot for default test data', function () {
+        it('matches snapshot for default test data', async function () {
             const result = renderForEmail(getTestData(), {feature: {}});
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <table class="kg-product-card" cellspacing="0" cellpadding="0" border="0">
                     <tbody>
                         <tr>
@@ -227,84 +227,23 @@ describe('renderers/product-renderer', function () {
             assert.equal(result.html, '');
         });
 
-        it('renders dark mode rating image when background is dark', function () {
+        it('renders dark mode rating image when background is dark', async function () {
             const result = renderForEmail(getTestData(), {feature: {}, design: {backgroundIsDark: true}});
             assert.ok(result.html);
-            assertPrettifiedIncludes(result.html, html`
+            await assertPrettifiedIncludes(result.html, html`
                 <img src="https://static.ghost.org/v4.0.0/images/star-rating-darkmode-3.png" border="0" />
             `);
         });
 
-        it('renders light mode rating image when background is light', function () {
+        it('renders light mode rating image when background is light', async function () {
             const result = renderForEmail(getTestData(), {feature: {}, design: {backgroundIsDark: false}});
             assert.ok(result.html);
-            assertPrettifiedIncludes(result.html, html`
+            await assertPrettifiedIncludes(result.html, html`
                 <img src="https://static.ghost.org/v4.0.0/images/star-rating-3.png" border="0" />
             `);
         });
 
-        it('renders with emailCustomization feature flag', function () {
-            const result = renderForEmail({
-                productButton: 'Click me',
-                productButtonEnabled: true,
-                productDescription: 'This product is ok',
-                productImageSrc: 'https://example.com/images/ok.jpg',
-                productImageWidth: null,
-                productImageHeight: null,
-                productRatingEnabled: true,
-                productStarRating: 3,
-                productTitle: 'Product title!',
-                productUrl: 'https://example.com/product/ok'
-            }, {feature: {emailCustomization: true}});
-
-            assertPrettifiesTo(result.html, html`
-                <table class="kg-product-card" cellspacing="0" cellpadding="0" border="0">
-                    <tbody>
-                        <tr>
-                            <td class="kg-product-card-container">
-                                <table cellspacing="0" cellpadding="0" border="0">
-                                    <tbody>
-                                        <tr>
-                                            <td class="kg-product-image" align="center">
-                                                <img src="https://example.com/images/ok.jpg" border="0" />
-                                            </td>
-                                        </tr>
-                                        <tr>
-                                            <td valign="top">
-                                                <h4 class="kg-product-title">Product title!</h4>
-                                            </td>
-                                        </tr>
-                                        <tr class="kg-product-rating">
-                                            <td valign="top">
-                                                <img src="https://static.ghost.org/v4.0.0/images/star-rating-3.png" border="0" />
-                                            </td>
-                                        </tr>
-                                        <tr>
-                                            <td class="kg-product-description-wrapper">This product is ok</td>
-                                        </tr>
-                                        <tr>
-                                            <td class="kg-product-button-wrapper">
-                                                <table class="btn" border="0" cellspacing="0" cellpadding="0">
-                                                    <tbody>
-                                                        <tr>
-                                                            <td align="center" width="100%">
-                                                                <a href="https://example.com/product/ok">Click me</a>
-                                                            </td>
-                                                        </tr>
-                                                    </tbody>
-                                                </table>
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            `);
-        });
-
-        it('renders without rating when star-rating is disabled', function () {
+        it('renders without rating when star-rating is disabled', async function () {
             const result = renderForEmail({
                 productButton: 'Click me',
                 productButtonEnabled: true,
@@ -318,7 +257,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: 'https://example.com/product/ok'
             }, {feature: {}});
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <table class="kg-product-card" cellspacing="0" cellpadding="0" border="0">
                     <tbody>
                         <tr>
@@ -360,7 +299,7 @@ describe('renderers/product-renderer', function () {
             `);
         });
 
-        it('renders without button when button is disabled', function () {
+        it('renders without button when button is disabled', async function () {
             const result = renderForEmail({
                 productButton: 'Click me',
                 productButtonEnabled: false,
@@ -374,7 +313,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: 'https://example.com/product/ok'
             }, {feature: {}});
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <table class="kg-product-card" cellspacing="0" cellpadding="0" border="0">
                     <tbody>
                         <tr>
@@ -403,7 +342,7 @@ describe('renderers/product-renderer', function () {
             `);
         });
 
-        it('renders without an image when productImageSrc is missing', function () {
+        it('renders without an image when productImageSrc is missing', async function () {
             const result = renderForEmail({
                 productButton: 'Click me',
                 productButtonEnabled: false,
@@ -417,7 +356,7 @@ describe('renderers/product-renderer', function () {
                 productUrl: 'https://example.com/product/ok'
             }, {feature: {}});
 
-            assertPrettifiesTo(result.html, html`
+            await assertPrettifiesTo(result.html, html`
                 <table class="kg-product-card" cellspacing="0" cellpadding="0" border="0">
                     <tbody>
                         <tr>

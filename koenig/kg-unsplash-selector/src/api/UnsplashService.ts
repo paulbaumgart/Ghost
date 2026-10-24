@@ -1,71 +1,90 @@
 import MasonryService from './MasonryService';
-import {Photo} from '../UnsplashTypes';
-import {PhotoUseCases} from './PhotoUseCase';
+import { Photo } from '../UnsplashTypes';
+import { PhotoUseCases } from './PhotoUseCase';
 
 export interface IUnsplashService {
-    loadNew(): Promise<void>;
-    layoutPhotos(): void;
-    getColumns(): Photo[][] | [] | null;
-    updateSearch(term: string): Promise<void>;
-    loadNextPage(): Promise<void>;
-    clearPhotos(): void;
-    triggerDownload(photo: Pick<Photo, 'links'>): void;
-    photos: Photo[];
-    searchIsRunning(): boolean;
+  loadNew(): Promise<boolean>;
+  layoutPhotos(): void;
+  getColumns(): Photo[][] | [] | null;
+  updateSearch(term: string): Promise<boolean>;
+  loadNextPage(): Promise<boolean>;
+  clearPhotos(): void;
+  triggerDownload(photo: Pick<Photo, 'links'>): void;
+  photos: Photo[];
+  searchIsRunning(): boolean;
 }
 
 export class UnsplashService implements IUnsplashService {
-    private photoUseCases: PhotoUseCases;
-    private masonryService: MasonryService;
-    public photos: Photo[] = [];
+  private photoUseCases: PhotoUseCases;
+  private masonryService: MasonryService;
+  public photos: Photo[] = [];
+  private generation: number = 0;
 
-    constructor(photoUseCases: PhotoUseCases, masonryService: MasonryService) {
-        this.photoUseCases = photoUseCases;
-        this.masonryService = masonryService;
+  constructor(photoUseCases: PhotoUseCases, masonryService: MasonryService) {
+    this.photoUseCases = photoUseCases;
+    this.masonryService = masonryService;
+  }
+
+  // Resolves to false when a newer load or search superseded this one
+  async loadNew() {
+    this.generation += 1;
+    const generation = this.generation;
+    let images = await this.photoUseCases.fetchPhotos();
+    if (generation !== this.generation) {
+      return false;
     }
+    this.photos = images;
+    await this.layoutPhotos();
+    return true;
+  }
 
-    async loadNew() {
-        let images = await this.photoUseCases.fetchPhotos();
-        this.photos = images;
-        await this.layoutPhotos();
+  async layoutPhotos() {
+    this.masonryService.reset();
+
+    if (this.photos) {
+      this.photos.forEach((photo) => {
+        photo.ratio = photo.height / photo.width;
+        this.masonryService.addPhotoToColumns(photo);
+      });
     }
+  }
 
-    async layoutPhotos() {
-        this.masonryService.reset();
+  getColumns() {
+    return this.masonryService.getColumns();
+  }
 
-        if (this.photos) {
-            this.photos.forEach((photo) => {
-                photo.ratio = photo.height / photo.width;
-                this.masonryService.addPhotoToColumns(photo);
-            });
-        }
+  async updateSearch(term: string) {
+    this.generation += 1;
+    const generation = this.generation;
+    let results = await this.photoUseCases.searchPhotos(term);
+    if (generation !== this.generation) {
+      return false;
     }
+    this.photos = results;
+    this.layoutPhotos();
+    return true;
+  }
 
-    getColumns() {
-        return this.masonryService.getColumns();
+  async loadNextPage() {
+    const generation = this.generation;
+    const newPhotos = (await this.photoUseCases.fetchNextPage()) || [];
+    if (generation !== this.generation) {
+      return false;
     }
+    this.photos = [...this.photos, ...newPhotos];
+    this.layoutPhotos();
+    return true;
+  }
 
-    async updateSearch(term: string) {
-        let results = await this.photoUseCases.searchPhotos(term);
-        this.photos = results;
-        this.layoutPhotos();
-    }
+  clearPhotos() {
+    this.photos = [];
+  }
 
-    async loadNextPage() {
-        const newPhotos = await this.photoUseCases.fetchNextPage() || [];
-        this.photos = [...this.photos, ...newPhotos];
-        this.layoutPhotos();
-    }
+  triggerDownload(photo: Pick<Photo, 'links'>) {
+    this.photoUseCases.triggerDownload(photo);
+  }
 
-    clearPhotos() {
-        this.photos = [];
-    }
-
-    triggerDownload(photo: Pick<Photo, 'links'>) {
-        this.photoUseCases.triggerDownload(photo);
-    }
-
-    searchIsRunning() {
-        return this.photoUseCases.searchIsRunning();
-    }
+  searchIsRunning() {
+    return this.photoUseCases.searchIsRunning();
+  }
 }

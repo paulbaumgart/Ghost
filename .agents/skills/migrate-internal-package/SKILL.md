@@ -9,6 +9,17 @@ Move a package from another TryGhost repository into Ghost without losing its
 history or creating a period where neither repository owns it. Keep migration
 mechanics separate from Ghost's lifetime package standards.
 
+Any contributor can run this skill. Do not require repository administration
+permission for the audit, import, PR preparation, CI, read-only preflight,
+post-merge verification or follow-up work. Administration is required only at
+the exceptional merge checkpoint, which is handed to one of the small set of
+Ghost repository administrators.
+
+The contributor workflow is documented in
+[`docs/contributing/internal-package-migrations.md`](../../../docs/contributing/internal-package-migrations.md).
+Keep that guide aligned when this skill changes its outputs or human
+checkpoints.
+
 ## Authority boundaries
 
 Explain every cross-repository or administrative action before it happens.
@@ -17,13 +28,53 @@ Explain every cross-repository or administrative action before it happens.
 - If the user says "tell me how, I do it", provide the command and wait.
 - Require explicit authorization before changing repository settings, merging a
   PR, deprecating npm versions, or force-pushing.
+- Never run the history import's `--confirm` operation. That command is the
+  deliberate human administrator checkpoint because it temporarily changes a
+  Ghost repository setting and merges the exceptional PR.
 - Never ask for, display, or store credentials or OTPs.
+
+## Work in isolated checkouts
+
+Never manipulate history in a checkout containing unrelated work. Fetch both
+repositories, confirm the source checkout is clean, and create a dedicated
+Ghost worktree from the freshly fetched `origin/main`.
+
+Run history-changing commands individually or in a fail-fast shell. A failed
+`git worktree add` must not be followed by `git subtree add` in whichever
+checkout happens to be current. Before choosing a branch or path, list existing
+worktrees and matching local and remote branches. Use a migration-specific slug,
+for example `codex/import-<package>-from-<source>`, rather than a generic name.
+
+If the destination branch or path already exists, stop and inspect its
+cleanliness, base, divergence, source split and attached worktree. Do not mutate,
+delete or silently reuse it. Present the evidence and ask the user whether to
+resume, preserve and supersede, or remove it when more than one choice is
+reasonable. A previous attempt can contain valid unmerged history even when its
+remote branch is gone.
+
+Before importing, record and compare the destination `HEAD` and `origin/main`;
+they must match. Recheck the first parent immediately after the subtree commit.
+
+Initialize a fresh Ghost worktree with `pnpm bootstrap`, not `pnpm setup`.
+`pnpm setup` is a pnpm CLI command that configures pnpm's global home and may
+edit shell startup files; it does not invoke Ghost's repository bootstrap.
+Before continuing, confirm the command installed the workspace, initialized the
+submodules and configured the repository-local blame ignore file as described
+by Ghost's root `bootstrap` script.
 
 ## Confirm this workflow applies
 
 Before changing either repository, record the source repository, its default
 branch, the package path within it, the destination path in Ghost, and whether
 the package has been published to npm. Then:
+
+All packages moved by this workflow belong in Ghost's root `packages/`
+workspace. Derive the destination as `packages/<package-directory>` from the
+source package directory and report that exact path to the user before creating
+the subtree. Never place an imported package under `ghost/`, even when Ghost
+Core is its only consumer. If the derived path conflicts with an existing path
+or the request appears to require another workspace, stop and resolve the
+destination explicitly before manipulating history.
 
 1. Find every Ghost and source-repository reference to the package name and
    directory.
@@ -35,6 +86,22 @@ the package has been published to npm. Then:
 Publication or download counts alone do not prove that a package must remain a
 supported public API. If supported external consumers still need new releases,
 stop: this internal-only workflow is the wrong publishing model.
+
+For the public-consumer audit, check npm metadata, first-party repositories and
+documentation, plus GitHub code search for package dependencies and runtime
+imports. Classify results as first-party consumers, independent integrations,
+Ghost forks, or deployed Ghost installation snapshots. Forks and installation
+snapshots show historical presence only. Require a recent update, current
+deployment, active dependency or another freshness signal before treating them
+as evidence of continued installation needs; even then, they do not establish
+an independently supported API. Record the evidence and confidence behind the
+ownership decision; stop and ask if current support expectations remain
+unclear.
+
+Run registry-only `npm view` commands from a neutral temporary directory. A
+repository's `devEngines` policy can reject the host Node version before npm
+contacts the registry, which is unrelated to the package metadata audit. Record
+that failure separately if using a neutral directory does not resolve it.
 
 ## Produce these work products in order
 
@@ -63,13 +130,62 @@ commits manually.
 After the subtree commit, add focused integration commits that:
 
 - make the package private with an internal placeholder version;
+- set `ghostPackage.goldenPath` to `migration` and `ghostPackage.reason` to a
+  concise explanation of the remaining modernization work;
 - switch Ghost consumers to `workspace:*`;
 - update the lockfile with `pnpm`;
 - minimally adapt configuration and tests to work in Ghost;
 - retain runtime behavior for the later modernization PR.
 
+Before editing package metadata, map each source `workspace:*` dependency to
+its destination state:
+
+- use `workspace:*` when the dependency already exists in Ghost;
+- use `catalog:` when Ghost's catalog version satisfies the imported package;
+- add a named migration catalog with the exact published version when changing
+  the shared catalog would broaden the migration or alter runtime behavior;
+- stop if a required dependency is unpublished or exists only in the source
+  workspace.
+
+Document temporary named-catalog entries for the modernization follow-up. Never
+inline dependency versions; Ghost's strict catalog policy still applies. Do not
+import additional packages implicitly. After `pnpm install`, inspect the
+lockfile's resolved override and package snapshot entries for every translated
+dependency. Repository-wide pnpm overrides take precedence over catalog
+references without changing the dependency declaration in `package.json`; if a
+global override changes an imported package's required version, add the
+narrowest package-scoped override that preserves the source release and record
+why it is needed.
+
+If the package is legacy JavaScript or CommonJS, read
+[`references/legacy-integration.md`](references/legacy-integration.md)
+completely before creating integration commits.
+
 Verify that the subtree commit has two parents and that representative file
 history crosses into the source repository before opening the PR.
+
+Before opening the PR, also verify the source split is reachable from the branch
+tip, the consumer resolves the workspace package through its production import
+path, package lint and tests pass through Nx, relevant consumer tests pass, the
+repository formatting check passes, the full build passes, and the Ghost
+archive contains the internal package. Record the exact commit IDs and commands
+in the handoff. Keep mechanical formatting in a focused integration commit so
+the subtree commit remains an exact history import and reviewers can distinguish
+format-only changes from behavioral adaptation.
+
+Open the history-import PR with a title beginning `[Don't merge]`. Put a
+prominent warning at the top of its body that squash and rebase merges destroy
+the imported ancestry and that the PR must only be merged with the guarded
+history script below. Do not remove the prefix or warning merely because CI is
+green: they remain until the authorized user performs the exceptional merge.
+
+For a pilot or first use, include a structured gap report in the handoff:
+
+- `Observed`: the exact failure or ambiguity and the command/state that exposed it;
+- `Worked around`: the safe action taken, without hiding the original gap;
+- `Skill change`: the concrete instruction, preflight or script improvement;
+- `Tooling change`: anything that cannot be solved within this repository;
+- `Confidence`: high, medium or low, with unresolved evidence called out.
 
 ## 2. Merge the import without rewriting history
 
@@ -79,24 +195,42 @@ method:
 - squash merge discards the imported ancestry;
 - rebase merge cannot preserve the subtree merge topology.
 
-Make CI green, then stop at the merge checkpoint. If the merge-commit option is
-disabled, an authorized org admin should run:
+Make CI green and run the guarded script with `--dry-run` as part of the
+automated preparation. Resolve preflight failures that are within the import's
+scope. Once it passes, stop and ask a human Ghost repository administrator to
+run this command from the Ghost repository root:
 
 ```bash
 .agents/skills/migrate-internal-package/scripts/merge-history-pr \
     TryGhost/Ghost \
     <pr-number> \
     <source-split-tip> \
+    <dry-run-head-sha> \
     --confirm
 ```
 
-An agent without admin authority should provide that exact handoff rather than
-attempting a workaround. The script performs preflight checks, records and
-temporarily changes the setting, uses the correct merge form, restores the
-setting, and verifies the resulting history.
+The human administrator's script repeats the preflight, records and temporarily changes the merge
+setting, uses the correct merge form, restores the setting, and verifies the
+resulting history. The skill must not run this command on the administrator's
+behalf, even if its current GitHub session appears to have sufficient access.
 
-Afterward, independently fetch `main` and confirm the source split tip is an
-ancestor before starting source-repository cleanup.
+Every merge-checkpoint handoff must repeat the warning and render a directly
+copyable `--confirm` command containing the actual PR number and recorded source
+split tip plus the exact head SHA reported by the dry run; do not leave
+placeholders for the administrator to infer. Include the successful dry-run
+evidence and explain that the command rejects a changed head, temporarily
+enables merge commits, merges the pinned PR head, restores the original setting
+and verifies the ancestry. Explicitly say not to use GitHub's normal
+squash/rebase buttons and not to remove `[Don't merge]` manually.
+
+The history-import PR must not belong to a GitHub pull-request stack. The
+preflight must stop and ask the contributor to unstack it before the human
+checkpoint; do not use GitHub's asynchronous stack merge while the repository's
+merge-commit setting is temporarily enabled.
+
+Wait for the administrator to report that the command completed. Afterward,
+independently fetch `main` and confirm the source split tip is an ancestor, then
+continue the automated source-repository cleanup and modernization workflow.
 
 ## 3. Remove the package from the source repository
 

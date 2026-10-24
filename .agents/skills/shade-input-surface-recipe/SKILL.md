@@ -3,6 +3,7 @@ name: Shade inputSurface recipe
 description: Use the inputSurface() recipe for form-control chrome (border, background, radius, focus ring, invalid state) — don't roll your own. Trigger when editing form-control-shaped files in Shade.
 autoTrigger:
   - fileEdit: "apps/shade/src/components/ui/{input,textarea,input-group,select,combobox,multi-select-combobox,dropzone,calendar,command}.tsx"
+  - fileEdit: "apps/shade/src/components/ui/{input-group,dropzone}-variants.ts"
 ---
 
 # Shade — `inputSurface` recipe
@@ -78,15 +79,15 @@ Available atoms:
 
 ## What the recipe owns vs. what you add
 
-| Recipe owns | You add |
-|---|---|
-| Border (`border-control-border`) | Height, padding |
-| Background (`bg-control-surface`) | Typography (`text-control`, `text-sm`) |
-| Radius (`rounded-md`) | Layout (`flex`, `items-center`) |
-| Transition (`transition-colors`) | Placeholder styling |
-| Focus ring (`focus-visible:ring-focus-ring/25`) | Component-specific tweaks |
-| Invalid state (`aria-[invalid=true]:border-destructive`) | Icons / slot positioning |
-| Disabled (`disabled:opacity-50`) — self only | — |
+| Recipe owns                                              | You add                                |
+| -------------------------------------------------------- | -------------------------------------- |
+| Border (`border-control-border`)                         | Height, padding                        |
+| Background (`bg-control-surface`)                        | Typography (`text-control`, `text-sm`) |
+| Radius (`rounded-md`)                                    | Layout (`flex`, `items-center`)        |
+| Transition (`transition-colors`)                         | Placeholder styling                    |
+| Focus ring (`focus-visible:ring-focus-ring/25`)          | Component-specific tweaks              |
+| Invalid state (`aria-[invalid=true]:border-destructive`) | Icons / slot positioning               |
+| Disabled (`disabled:opacity-50`) — self only             | —                                      |
 
 ## Don't
 

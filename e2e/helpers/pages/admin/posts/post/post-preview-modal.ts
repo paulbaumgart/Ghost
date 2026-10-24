@@ -1,42 +1,48 @@
-import {DesktopPreviewFrame,EmailPreviewFrame} from '@/helpers/pages';
-import {Locator, Page} from '@playwright/test';
+import { DesktopPreviewFrame, EmailPreviewFrame } from '@/helpers/pages';
+import { Locator, Page } from '@playwright/test';
+import {
+  emailPreviewTab,
+  postPreviewModal,
+  webPreviewTab,
+} from '@tryghost/test-data/selectors/editor';
 
 export class PostPreviewModal {
-    private readonly page: Page;
-    readonly modal: Locator;
-    readonly header: Locator;
-    readonly closeButton: Locator;
+  private readonly page: Page;
+  readonly modal: Locator;
+  readonly header: Locator;
+  readonly closeButton: Locator;
 
-    readonly webTabButton: Locator;
-    readonly emailTabButton: Locator;
+  readonly webTabButton: Locator;
+  readonly emailTabButton: Locator;
 
-    public readonly desktopPreview: DesktopPreviewFrame;
-    public readonly emailPreview: EmailPreviewFrame;
+  public readonly desktopPreview: DesktopPreviewFrame;
+  public readonly emailPreview: EmailPreviewFrame;
 
-    constructor(page: Page) {
-        this.page = page;
-        this.modal = this.page.getByRole('banner').filter({hasText: 'Preview'});
-        this.header = this.modal.getByRole('heading', {name: 'Preview'});
-        this.closeButton = this.modal.getByRole('button', {name: 'Close'});
+  constructor(page: Page) {
+    this.page = page;
 
-        this.desktopPreview = new DesktopPreviewFrame(page);
-        this.emailPreview = new EmailPreviewFrame(page);
+    this.modal = page.getByTestId(postPreviewModal);
+    this.header = this.modal.getByRole('heading', { name: 'Preview' });
+    this.closeButton = this.modal.getByRole('button', { name: 'Close' });
 
-        this.webTabButton = this.modal.getByRole('button', {name: 'Web'});
-        this.emailTabButton = this.modal.getByRole('button', {name: 'Email'});
-    }
+    this.desktopPreview = new DesktopPreviewFrame(page);
+    this.emailPreview = new EmailPreviewFrame(page);
 
-    async switchToEmailTab(): Promise<void> {
-        await this.emailTabButton.click();
-        await this.emailPreview.frameBody.waitFor({state: 'visible'});
-    }
+    this.webTabButton = this.modal.getByRole('tab', { name: webPreviewTab });
+    this.emailTabButton = this.modal.getByRole('tab', { name: emailPreviewTab });
+  }
 
-    async emailPreviewContent(): Promise<string | null> {
-        return await this.emailPreview.content();
-    }
+  async switchToEmailTab(): Promise<void> {
+    await this.emailTabButton.click();
+    await this.emailPreview.frameBody.waitFor({ state: 'visible' });
+  }
 
-    async close(): Promise<void> {
-        await this.closeButton.click();
-        await this.modal.waitFor({state: 'hidden'});
-    }
+  async emailPreviewContent(): Promise<string | null> {
+    return await this.emailPreview.content();
+  }
+
+  async close(): Promise<void> {
+    await this.closeButton.click();
+    await this.modal.waitFor({ state: 'hidden' });
+  }
 }

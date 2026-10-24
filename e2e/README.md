@@ -1,14 +1,20 @@
 # Ghost End-To-End Test Suite
 
-This test suite runs automated browser tests against a running Ghost instance to ensure critical user journeys work correctly.
+This top-level workspace is Ghost's browser end-to-end test suite. It runs
+automated browser tests against a complete, running Ghost instance to verify
+critical user journeys across packages and applications. A package's own
+Playwright suite is an _acceptance_ suite, not an E2E one — see the
+[testing guide](../docs/contributing/testing.md) for how the layers differ.
 
 ## Quick Start
 
 ### Prerequisites
+
 - Docker and Docker Compose installed
 - Node.js installed (pnpm is managed via corepack — run `corepack enable pnpm` first)
 
 ### Running Tests
+
 To run the test, within this `e2e` folder run:
 
 ```bash
@@ -22,7 +28,8 @@ pnpm test
 ### Dev Environment Mode (Recommended for Development)
 
 If `GHOST_E2E_MODE` is unset, the e2e shell entrypoints auto-select:
-- `dev` when the local admin dev server is reachable on `http://127.0.0.1:5174`
+
+- `dev` when the Admin dev server from `pnpm dev` or `pnpm dev:docker` is reachable
 - `build` otherwise
 
 To use dev mode, start `pnpm dev` before running tests:
@@ -34,6 +41,9 @@ pnpm dev
 # Terminal 2: Run e2e tests (from e2e folder)
 pnpm test
 ```
+
+On Linux, start it with `GHOST_DEV_LISTEN=0.0.0.0 pnpm dev`: the test containers
+reach it through the Docker bridge, and it only listens on loopback by default.
 
 If infra is already running, `pnpm infra:up` is safe to run again.
 For dev-mode test runs, `infra:up` also ensures required local Ghost/gateway dev images exist.
@@ -55,7 +65,7 @@ E2E test scripts automatically sync Tinybird tokens when Tinybird is running.
 
 ### Build Mode (Prebuilt Image)
 
-Use build mode when you don’t want to run dev servers. It uses a prebuilt Ghost image and serves public assets from `/content/files`.
+Use build mode when you don’t want to run dev servers. It uses a prebuilt Ghost image and serves public assets from `/ghost/assets`.
 
 ```bash
 # From repository root
@@ -68,10 +78,28 @@ GHOST_E2E_MODE=build pnpm --filter @tryghost/e2e infra:up
 GHOST_E2E_MODE=build GHOST_E2E_IMAGE=ghost-e2e:local pnpm --filter @tryghost/e2e test
 ```
 
-Build-mode E2E infra uses tmpfs-backed MySQL storage by default so database
-snapshot restore cycles stay fast and isolated from local development data.
-Set `GHOST_E2E_MYSQL_TMPFS=false` to use the normal Docker volume instead, or
-`GHOST_E2E_MYSQL_TMPFS_SIZE=4g` to adjust the tmpfs size.
+E2E shares the MySQL, Redis and Mailpit containers with `pnpm dev` and only
+touches `ghost_e2e_*` databases. Setup and teardown remove the checkout's own
+E2E containers and databases. A linked worktree adds a key from its path to
+their names and lets Docker pick its gateway ports, so worktrees and the main
+checkout can run E2E at the same time. Run one suite at a time per checkout.
+
+CI sets `GHOST_E2E_MYSQL_TMPFS=true` to put build-mode MySQL on tmpfs, which
+keeps snapshot restores fast (`GHOST_E2E_MYSQL_TMPFS_SIZE=4g` adjusts the size).
+Don't set it locally while any checkout uses that MySQL: it recreates the
+container without their databases.
+
+Set `GHOST_E2E_TINYBIRD_SLIM=true` to swap the Tinybird service for the distilled
+slim image (`ghcr.io/tryghost/tinybird-local-slim`): ~0.7GB pulled and ~2.4GB on
+disk, against ~2.1GB and ~6.9GB for upstream. CI enables it so the analytics jobs
+fit inside the runner disk budget. Override the image/tag with
+`GHOST_E2E_TINYBIRD_SLIM_IMAGE`. Local dev (`compose.dev.analytics.yaml`) always
+uses the upstream image.
+
+The slim image's GHCR package is internal, so a pull can legitimately fail — most
+often on a PR from a public fork, whose token cannot read it. `infra-up.sh` warns
+and falls back to the upstream image rather than failing the run. CI leaves the
+flag off for cross-repo PRs so those runs skip the doomed pull entirely.
 
 For a CI-like local preflight (pulls Playwright + gateway images and starts infra), run:
 
@@ -79,12 +107,11 @@ For a CI-like local preflight (pulls Playwright + gateway images and starts infr
 pnpm --filter @tryghost/e2e preflight:build
 ```
 
-
 ### Running Specific Tests
 
 ```bash
-# Specific test file
-pnpm test specific/folder/testfile.spec.ts
+# Run the Admin sign-in test
+pnpm test tests/admin/signin.test.ts
 
 # Matching a pattern
 pnpm test --grep "homepage"
@@ -95,116 +122,49 @@ pnpm test --debug
 
 ## Tests Development
 
+See [Writing Browser E2E Tests](../docs/contributing/e2e-testing.md) for the
+canonical conventions, Page Object pattern, locator priority, waiting patterns,
+and worked examples. This README covers the local workspace, infrastructure,
+fixtures, and commands.
+
 The test suite is organized into separate directories for different areas/functions:
 
 ### **Current Test Suites**
+
 - `tests/public/` - Public-facing site tests (homepage, posts, etc.)
 - `tests/admin/` - Ghost admin panel tests (login, content creation, settings)
+- `tests/portal/` - Portal member journey tests
 
 We can decide whether to add additional sub-folders as we add more tests.
 
-Example structure for admin tests:
-```text
-tests/admin/
-├── login.spec.ts
-├── posts.spec.ts
-└── settings.spec.ts
-```
-
-Project folder structure can be seen below: 
+Project folder structure can be seen below:
 
 ```text
 e2e/
 ├── tests/                      # All the tests
 │   ├── public/                 # Public site tests
-│   │   └── testname.spec.ts    # Test cases
+│   │   └── member-signup.test.ts
 │   ├── admin/                  # Admin site tests
-│   │   └── testname.spec.ts    # Test cases
+│   │   └── signin.test.ts
+│   ├── portal/                 # Portal tests
 │   ├── global.setup.ts         # Global setup script
-│   ├── global.teardown.ts      # Global teardown script
-│   └── .eslintrc.js            # Test-specific ESLint config
+│   └── global.teardown.ts      # Global teardown script
 ├── helpers/                    # All helpers that support the tests, utilities, fixtures, page objects etc.
 │   ├── playwright/             # Playwright specific helpers
 │   │   └── fixture.ts          # Playwright fixtures
-│   ├── pages/                  # Page Object Models
-│   │   └── HomePage.ts         # Page Object
-│   ├── utils/                  # Utils
-│   │   └── math.ts             # Math related utils   
-│   └── index.ts                # Main exports
+│   ├── pages/                  # Page Object Models, grouped by area
+│   │   ├── base-page.ts        # Base class for all page objects
+│   │   └── admin/              # e.g. login-page.ts, admin-page.ts
+│   ├── environment/            # Ghost container/database lifecycle
+│   ├── services/               # Test doubles (fake Stripe, Mailgun, upgrade host, etc.)
+│   └── utils/                  # Shared utilities
+├── data-factory/               # Test data factories (see its own README)
+├── visual-regression/          # Screenshot baseline suite (separate config)
+├── scripts/                    # Infra and runner shell scripts
 ├── playwright.config.mjs       # Playwright configuration
+├── eslint.config.js            # Lint config for the workspace
 ├── package.json                # Dependencies and scripts
-└── tsconfig.json               # TypeScript configuration
-```
-
-### Writing Tests
-
-Tests use [Playwright Test](https://playwright.dev/docs/writing-tests). Use
-Arrange–Act–Assert (AAA) as a readability heuristic: set up the scenario, perform
-the behavior under test, then verify the outcome. Keep those phases clear through
-test structure and naming; comments are only useful when the boundaries would
-otherwise be unclear.
-
-```typescript
-test.describe('Ghost Homepage', () => {
-    test('loads correctly', async ({page}) => {
-        const homePage = new HomePage(page);
-
-        await homePage.goto();
-
-        await expect(homePage.title).toBeVisible();
-    });
-});
-```
-
-### Using Page Objects
-
-Page Objects are the default home for reusable knowledge about a page or major UI
-component. They encapsulate locators, readiness guards, and semantic interactions
-so tests can describe behavior rather than DOM structure. Assertions stay in test
-files.
-
-Prefer an existing Page Object when a test exercises reusable UI behavior. A direct
-semantic locator in a test is acceptable for a small, one-off assertion or
-interaction when creating a Page Object would add indirection without reuse.
-Structural selectors sometimes remain necessary for iframes, editor internals,
-generated theme markup, and elements without an accessible role. Keep those inside
-Page Objects where practical and prefer, in order:
-
-1. Accessible roles, labels, and visible text
-2. Stable test IDs
-3. Stable structural selectors when no semantic locator exists
-
-Avoid selectors coupled to visual styling, DOM position, or incidental class names.
-See [Playwright's locator guidance](https://playwright.dev/docs/locators) and
-[Martin Fowler's Page Object description](https://martinfowler.com/bliki/PageObject.html)
-for background.
-
-```typescript
-// Create a page object for admin login
-import type {Locator, Page} from '@playwright/test';
-
-export class AdminLoginPage {
-    private readonly pageUrl = '/ghost';
-    public readonly emailInput: Locator;
-    public readonly passwordInput: Locator;
-    public readonly signInButton: Locator;
-    
-    constructor(private readonly page: Page) {
-        this.emailInput = page.getByLabel('Email address');
-        this.passwordInput = page.getByLabel('Password');
-        this.signInButton = page.getByRole('button', {name: 'Sign in'});
-    }
-
-    async goto(urlToVisit = this.pageUrl) {
-        await this.page.goto(urlToVisit);
-    }
-    
-    async login(email: string, password: string) {
-        await this.emailInput.fill(email);
-        await this.passwordInput.fill(password);
-        await this.signInButton.click();
-    }
-}
+└── tsconfig.json               # TypeScript configuration and path aliases
 ```
 
 ### Global Setup and Teardown
@@ -217,7 +177,18 @@ Tests use [Project Dependencies](https://playwright.dev/docs/test-global-setup-t
 ### Playwright Fixtures
 
 [Playwright Fixtures](https://playwright.dev/docs/test-fixtures) are defined in `helpers/playwright/fixture.ts` and provide reusable test setup/teardown logic.
+
+The fixtures a test usually reaches for:
+
+- `page` - browser page against this test's Ghost instance
+- `pageWithAuthenticatedUser` - the same, already signed in to Ghost Admin
+- `ghostAccountOwner` - the owner account's credentials
+- `ghostInstance` - the running instance: `baseUrl`, `database`, `port`, `siteUuid`, `containerId`, `instanceId`
+- `resolvedIsolation` - `'per-file' | 'per-test'` for the current test
+- `resetEnvironment()` - force an environment recycle (see the escape hatch below)
+
 The fixture resolves isolation mode per test file:
+
 - Default: per-file isolation (one Ghost environment cycle per file)
 - Opt-in per-test: call `usePerTestIsolation()` from `@/helpers/playwright/isolation` at the root of the file
 - Forced per-test: any run with `fullyParallel: true`
@@ -229,30 +200,38 @@ Test isolation is still automatic, but no longer always per-test.
 Infrastructure (MySQL, Redis, Mailpit, Tinybird) must already be running before tests start. Use `pnpm dev` or `pnpm --filter @tryghost/e2e infra:up`.
 
 Global setup (`tests/global.setup.ts`) does:
+
 - Cleans up e2e containers and test databases
 - Creates a base database, starts Ghost, waits for health, snapshots the DB
 
 Per-file mode (`helpers/playwright/fixture.ts`) does:
+
 - Clones a new database from snapshot at file boundary
 - Restarts Ghost with the new database and waits for readiness
 - Reuses that environment for tests in the file
 
 Per-test mode (`helpers/playwright/fixture.ts`) does:
+
 - Clones a new database from snapshot for each test
 - Restarts Ghost with the new database and waits for readiness
 
 Environment identity for per-file reuse:
+
 - `config` participates in the environment identity.
 - `labs` participates in the environment identity.
 - If either changes between tests in the same file, the shared per-file Ghost environment is recycled before reuse.
 - `stripeEnabled` does not participate in per-file reuse. It always forces per-test isolation because Ghost must boot against a per-test fake Stripe server.
+- `upgradeHostEnabled` forces per-test isolation for the same reason, with a per-test fake upgrade host.
 
 Fixture option behavior:
+
 - `config`: use for boot-time Ghost config that should get a fresh environment when it changes.
 - `labs`: use for labs flags that should get a fresh environment when they change.
 - `stripeEnabled`: use for Stripe-backed tests; this always runs each test with a fully isolated Ghost environment.
+- `upgradeHostEnabled`: use for Ghost update tests; see [Testing Ghost updates](../docs/contributing/testing-ghost-updates.md).
 
 Escape hatch:
+
 - `resetEnvironment()` is supported only in `beforeEach` hooks for per-file tests.
 - Use it only before resolving stateful fixtures such as `baseURL`, `page`, `pageWithAuthenticatedUser`, or `ghostAccountOwner`.
 - Safe hook pattern: `test.beforeEach(async ({resetEnvironment}) => { ... })`
@@ -260,15 +239,18 @@ Escape hatch:
 - ESLint catches the obvious misuse cases, but the runtime guard in the fixture remains the hard safety check.
 
 Opting into per-test isolation:
+
 - Use `usePerTestIsolation()` from `@/helpers/playwright/isolation` at the root of the file.
 - This configures both Playwright parallel mode and the fixture isolation in one call.
 
 Global teardown (`tests/global.teardown.ts`) does:
+
 - Cleans up e2e containers and test databases (infra services stay running)
 
 Modes:
+
 - Dev mode: Ghost mounts source code and proxies assets to host dev servers
-- Build mode: Ghost uses a prebuilt image and serves assets from `/content/files`
+- Build mode: Ghost uses a prebuilt image and serves assets from `/ghost/assets`
 
 ### Best Practices
 
@@ -287,10 +269,16 @@ Tests run automatically in GitHub Actions on every PR and commit to `main`.
 
 1. **Setup**: Ubuntu runner with Node.js and Docker
 2. **Build Assets**: Build server/admin assets and public app UMD bundles
-3. **Build E2E Image**: `pnpm --filter @tryghost/e2e build:docker` (layers public apps into `/content/files`)
+3. **Build E2E Image**: `pnpm --filter @tryghost/e2e build:docker` (layers public apps into Ghost's built admin assets, served from `/ghost/assets`)
 4. **Prepare E2E Runtime**: Pull Playwright/gateway images in parallel, start infra, and sync Tinybird state (`pnpm --filter @tryghost/e2e preflight:build`)
-5. **Test Execution**: Run Playwright E2E tests inside the official Playwright container
-6. **Artifacts**: Upload Playwright traces and reports on failure
+5. **Shard Planning**: Split the `main` project's files across shards by recorded duration (`tools/scripts/ci/e2e-shards.ts`)
+6. **Test Execution**: Run Playwright E2E tests inside the official Playwright container
+7. **Artifacts**: Upload Playwright traces and reports on failure
+
+`main` shards balance on per-file durations that each `main` branch run records
+into the Actions cache. A file without a recorded time is estimated from its test
+count, so new tests need no setup. The `analytics` project still uses
+Playwright's `--shard`.
 
 ## Available Scripts
 
@@ -300,15 +288,27 @@ Within the e2e directory:
 # Run all tests
 pnpm test
 
-# Start/stop test infra (MySQL/Redis/Mailpit/Tinybird)
+# Start test infra (MySQL/Redis/Mailpit/Tinybird), shared with pnpm dev
 pnpm infra:up
-pnpm infra:down
 
 # CI-like preflight for build mode (pulls images + starts infra)
 pnpm preflight:build
 
 # Debug failed tests (keeps containers)
 PRESERVE_ENV=true pnpm test
+
+# Check the fake Stripe server against captured Stripe responses, and the fake
+# upgrade host against the upgrade protocol fixtures (no infra, ~1s)
+pnpm test:fixtures
+
+# Put a Stripe test account into the state fixtures are captured from
+pnpm stripe:provision
+
+# Re-capture Stripe fixtures from test mode (needs STRIPE_SECRET_KEY)
+pnpm stripe:fixtures
+
+# Re-measure the checkout limits the fake server enforces
+pnpm stripe:probe
 
 # Run TypeScript type checking
 pnpm test:types
@@ -321,6 +321,70 @@ pnpm build
 pnpm dev           # Watch mode for TypeScript compilation
 ```
 
+## Stripe fixtures
+
+The fake Stripe server in `helpers/services/stripe/` hand-builds the objects Stripe
+would return. Those shapes were originally written from the docs rather than from
+Stripe, so nothing checked them against the real API.
+
+`helpers/services/stripe/fixtures/` holds responses captured from Stripe test mode at
+API version `2020-08-27`, the version `ghost` pins. `pnpm test:fixtures` asserts
+the builders against them, and needs no Ghost, no Docker and no browser.
+
+Two failures are worth catching. A builder emitting a key Stripe does not return means
+the fake describes an API that does not exist. A builder omitting a key Ghost reads is
+worse, because it is silent: the property access yields `undefined`, the branch behind
+it never runs, and the suite stays green.
+
+The same suite checks that the fake refuses requests Stripe refuses. Those constraints
+were measured, not read from the docs, because the docs and Stripe's published OpenAPI
+spec each disagree with the API on at least one of them.
+
+### Re-capturing
+
+```bash
+STRIPE_SECRET_KEY=sk_test_... pnpm stripe:provision   # once per account
+STRIPE_SECRET_KEY=sk_test_... pnpm stripe:fixtures
+```
+
+Test-mode keys only; a live key is refused.
+
+`stripe:provision` puts the account into the state fixtures are captured from: a tier
+product, its Monthly, Yearly and Complimentary prices, and a coupon. The nicknames are
+the point, because Ghost's own code matches on them. Capturing runs it first, so the
+two commands are only separate when you want to inspect what an account holds.
+
+Both are idempotent and reuse what is already there, since Stripe cannot delete a
+product that has prices.
+
+### Capturing a completed checkout
+
+A completed checkout cannot be captured with the above, because Stripe blocks automating
+its hosted payment page. `pnpm stripe:fixtures:checkout` does everything either side of
+the payment and asks for one card entry:
+
+```bash
+STRIPE_SECRET_KEY=sk_test_... pnpm stripe:fixtures:checkout
+```
+
+It prints a Checkout URL, waits, then captures the completed session once you have paid
+with `4242 4242 4242 4242`. Shipping address, tax ID and custom field collection are all
+requested on the same session, so one payment captures every shape the API cannot give
+us. Fill all of them in, or the fields come back null and the fixture answers nothing.
+
+The event envelope is deliberately not captured. An Event is an immutable snapshot
+rendered at the account's default API version when it was created, and fetching it with a
+pinned client does not re-render it. Ghost pins its webhook endpoint to the same version
+its client uses, so what Ghost receives and what the API can hand back are different
+renderings: at Stripe's current default the shipping address moves to
+`collected_information.shipping_details`, which Ghost never sees. Ghost reads only
+`event.type` and `event.data.object`, so the envelope carries nothing worth pinning.
+
+The same difference applies to `stripe listen`, which `pnpm dev:stripe --listen` uses:
+it renders events at the account default too. The default `pnpm dev:stripe` lets Ghost
+register its own pinned endpoint, so it receives the payloads production receives (see
+[Stripe testing](../docs/contributing/testing-stripe.md#receive-production-shaped-webhooks)).
+
 ## Resolving issues
 
 ### Test Failures
@@ -329,3 +393,15 @@ pnpm dev           # Watch mode for TypeScript compilation
 2. **Traces**: Available in `test-results/` directory
 3. **Debug Mode**: Run with `pnpm test --debug` or `pnpm test --ui` to see browser
 4. **Verbose Logging**: Check CI logs for detailed error information
+
+### Sign-in page never renders on Linux
+
+If tests time out waiting for the admin sign-in form and the trace shows
+requests failing with `net::ERR_NETWORK_CHANGED`, Chrome is reacting to Docker
+giving a new Ghost container's host-side network interface an IPv6 link-local
+address, about 1.5s after the container starts. CI avoids this by disabling IPv6
+on new interfaces before the tests run; do the same locally:
+
+```bash
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+```

@@ -3,6 +3,8 @@
 This document is the source of truth for Node.js libraries created under
 `packages/` for use inside the Ghost monorepo. Start from [`_template`](./_template)
 and keep the resulting package aligned with these rules throughout its lifetime.
+Generate a package with `pnpm gx generate package <name>`; see
+[Ghost Dev Tools](../tools/gx/README.md) for options.
 
 These defaults do not automatically apply to browser applications, test-only
 source helpers, or packages that Ghost intentionally publishes for third-party
@@ -13,7 +15,8 @@ consumers. Record and justify exceptions in the package README and configuration
 New internal packages are private, TypeScript-only ESM libraries:
 
 - use an `@tryghost/<name>` package name;
-- set `"version": "0.0.0"` and `"private": true`;
+- set `"version": "private"` and `"private": true` (the non-semver version keeps the package out of `pnpm version`);
+- set `"ghostPackage": {"goldenPath": "compliant"}`;
 - set `"type": "module"`;
 - keep authored code in `src/**/*.ts` and tests in `test/**/*.ts`;
 - compile production code to `build/` with `tsc`;
@@ -22,6 +25,22 @@ New internal packages are private, TypeScript-only ESM libraries:
 Making a package public or independently versioned is a product and maintenance
 decision, not a packaging convenience. Establish its compatibility, release and
 support policy before removing `private` or adding publishing automation.
+
+### Golden path status
+
+Every private package under `packages/` declares its lifecycle state in
+`ghostPackage.goldenPath`:
+
+- `compliant` means the package is mechanically checked against this document;
+- `migration` is temporary while a history-preserving import awaits a separate
+  modernization PR;
+- `exempt` records an intentional long-term exception such as a test-only or
+  multi-runtime package.
+
+Both `migration` and `exempt` require a non-empty `ghostPackage.reason`.
+Public, independently versioned packages do not declare this metadata because
+this internal-only contract does not apply to them. Run `pnpm lint:packages` to
+validate the status and all mechanically enforceable rules.
 
 ## Package metadata
 

@@ -1,0 +1,38 @@
+import { Box, Stack, Text } from '@tryghost/shade/primitives';
+import { useSearch } from '@/settings/providers/settings-app-context';
+
+interface SearchableSectionProps {
+  children?: React.ReactNode;
+  keywords: string[];
+  title?: string;
+}
+
+const SearchableSection: React.FC<SearchableSectionProps> = ({ children, keywords, title }) => {
+  const { checkVisible, noResult } = useSearch();
+  const isVisible = checkVisible(keywords) || noResult;
+
+  // The parent stack owns the spacing between sections, so it
+  // matches the page's top and bottom padding.
+  return (
+    <Box className={!isVisible ? 'hidden' : undefined}>
+      {title && (
+        <Text
+          as="h2"
+          className="z-20 mt-[-5px] mb-px pb-10 tracking-tight"
+          leading="heading"
+          size="2xl"
+          weight="semibold"
+        >
+          {title}
+        </Text>
+      )}
+      {children && (
+        <Stack className="gap-12" gap="none">
+          {children}
+        </Stack>
+      )}
+    </Box>
+  );
+};
+
+export default SearchableSection;

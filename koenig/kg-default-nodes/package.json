@@ -1,6 +1,7 @@
 {
   "name": "@tryghost/kg-default-nodes",
-  "version": "2.1.5",
+  "version": "2.2.5",
+  "description": "Lexical node definitions and HTML renderers for Ghost's Koenig editor cards",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/TryGhost/Ghost.git",
@@ -9,7 +10,7 @@
   "author": "Ghost Foundation",
   "license": "MIT",
   "engines": {
-    "node": "^22.13.1 || ^24.0.0"
+    "node": "^22.22.2 || ^24.15.0"
   },
   "main": "build/cjs/index.js",
   "module": "build/esm/index.js",
@@ -42,7 +43,8 @@
   "files": [
     "LICENSE",
     "README.md",
-    "build"
+    "build",
+    "!build/**/*.tsbuildinfo"
   ],
   "publishConfig": {
     "access": "public"
@@ -51,15 +53,16 @@
     "@eslint/js": "catalog:",
     "@lexical/headless": "0.13.1",
     "@lexical/html": "0.13.1",
-    "@prettier/sync": "0.6.1",
     "@types/jsdom": "catalog:",
-    "@types/lodash": "4.17.24",
-    "@types/luxon": "3.7.2",
+    "@types/lodash": "catalog:",
+    "@types/luxon": "catalog:",
     "@types/node": "catalog:",
     "@typescript/native": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "eslint-plugin-ghost": "catalog:",
-    "prettier": "3.9.4",
+    "html-minifier-next": "catalog:",
+    "jsdom": "catalog:",
+    "prettier": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
     "vitest": "catalog:"
@@ -74,8 +77,6 @@
     "@tryghost/kg-markdown-html-renderer": "workspace:~",
     "clsx": "catalog:",
     "entities": "catalog:",
-    "html-minifier": "4.0.0",
-    "jsdom": "catalog:",
     "lexical": "0.13.1",
     "lodash": "catalog:",
     "luxon": "3.7.2"

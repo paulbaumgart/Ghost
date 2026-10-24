@@ -1,33 +1,35 @@
-// Ref: https://reactjs.org/docs/context.html
-import React, {ComponentProps, useContext} from 'react';
-import pages, {Page, PageName} from './pages';
-import {GhostApi} from './utils/api';
+import { createContext } from 'preact';
+import { useContext } from 'preact/hooks';
+import type pages from './pages';
+import type { ComponentProps } from 'preact';
+import type { GhostApi } from './utils/api';
+import type { Page, PageName } from './pages';
 
 export type SignupFormOptions = {
-    title?: string,
-    description?: string,
-    icon?: string,
-    backgroundColor?: string,
-    textColor?: string,
-    buttonColor?: string,
-    buttonTextColor?: string,
-    site: string,
-    labels: string[],
-    locale: string
+  title?: string;
+  description?: string;
+  icon?: string;
+  backgroundColor?: string;
+  textColor?: string;
+  buttonColor?: string;
+  buttonTextColor?: string;
+  site: string;
+  labels: string[];
+  locale: string;
 };
 
 export type AppContextType = {
-    page: Page,
-    setPage: <T extends PageName>(name: T, data: ComponentProps<typeof pages[T]>) => void,
-    options: SignupFormOptions,
-    api: GhostApi,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    t: any,
-    scriptTag: HTMLElement
-}
+  page: Page;
+  setPage: <T extends PageName>(name: T, data: ComponentProps<(typeof pages)[T]>) => void;
+  options: SignupFormOptions;
+  api: GhostApi;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  t: any;
+  scriptTag: HTMLElement;
+};
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const AppContext = React.createContext<AppContextType>({} as any);
+const AppContext = createContext<AppContextType>({} as any);
 
 export const AppContextProvider = AppContext.Provider;
 

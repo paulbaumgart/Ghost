@@ -1,21 +1,20 @@
-import React, {useMemo} from 'react';
+import React, { useMemo } from 'react';
 import ReplyTree from './reply-tree';
-import {Comment} from '../../app-context';
-import {buildThreadedReplies} from '../../utils/thread-graph';
+import { buildThreadedReplies } from '../../utils/thread-graph';
+import type { Comment } from '../../app-context';
 
 export type ThreadedRepliesProps = {
-    comment: Comment;
-    useThreading: boolean;
+  comment: Comment;
 };
 
-const ThreadedReplies: React.FC<ThreadedRepliesProps> = ({comment, useThreading}) => {
-    const threadedReplies = useMemo(() => buildThreadedReplies(comment), [comment]);
+const ThreadedReplies: React.FC<ThreadedRepliesProps> = ({ comment }) => {
+  const threadedReplies = useMemo(() => buildThreadedReplies(comment), [comment]);
 
-    return (
-        <div>
-            <ReplyTree replies={threadedReplies} threadParentComment={comment} useThreading={useThreading} />
-        </div>
-    );
+  return (
+    <div>
+      <ReplyTree replies={threadedReplies} threadParentComment={comment} />
+    </div>
+  );
 };
 
 export default ThreadedReplies;

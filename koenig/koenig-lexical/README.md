@@ -16,12 +16,12 @@ Run `pnpm dev` to start the editor in standalone mode for development on http://
 
 All Koenig packages are part of the Ghost monorepo workspace, so no linking is
 needed — run `pnpm dev:lexical` from the monorepo root. That starts the normal
-Ghost dev environment plus the editor's `dev:integrated` target: a rebuild
-watcher for the editor (and kg-default-nodes / kg-default-transforms) and a
-preview server on port 4173 that the dev gateway proxies to Admin's
-`EDITOR_URL`.
+Ghost dev environment plus the editor's `dev:integrated` target, which rebuilds
+the editor (and kg-default-nodes / kg-default-transforms) on every change. In
+this mode Admin's dev server reads the editor's `dist` directly instead of
+pre-bundling it.
 
-Now, if you navigate to Ghost Admin at http://localhost:2368/ghost and open a post, it will use your local version of the editor. Changes to the editor will be reflected inside Ghost Admin after a few seconds - the time for the editor to get rebuilt.
+Now, if you open a post in Ghost Admin (http://localhost:2368/ghost in the main checkout), it uses your local version of the editor. Changes to the editor reach Admin a few seconds later, once the editor has been rebuilt.
 
 ### Specific card setup
 
@@ -63,6 +63,28 @@ All styles are scoped under `.koenig-lexical` class to avoid clashes and keep st
 
 When packaging the module, styles are included inside the JS file rather than being separate to allow for a single import of the module in the consuming app.
 
+**Content fonts**
+
+A host can restyle the text a writer writes by setting these variables on an
+ancestor of `.koenig-lexical`. Each falls back to the editor's own typography,
+so a host that sets none sees no change.
+
+| Variable                            | Applies to                                                                        | Default                 |
+| ----------------------------------- | --------------------------------------------------------------------------------- | ----------------------- |
+| `--kg-font-body`                    | Paragraphs, lists, quotes, tables, the placeholder and callout, toggle and CTA text | Georgia                 |
+| `--kg-font-body-scale`              | Multiplies the body's font sizes                                                  | `1`                     |
+| `--kg-font-body-line-height`        | The body's line height                                                            | `1.6em`                 |
+| `--kg-font-body-tracking`           | The body's letter spacing                                                         | inherited               |
+| `--kg-font-heading`                 | Headings, and the heading and subheading text of header, signup, product and toggle cards | Inter         |
+| `--kg-font-heading-scale`           | Multiplies the H1–H6 font sizes                                                   | `1`                     |
+| `--kg-font-heading-tracking-scale`  | Multiplies the H1–H6 letter spacing                                               | `1`                     |
+| `--kg-font-code-size`               | Inline code's font size, relative to the text around it                           | `.8em`                  |
+| `--kg-font-code-vertical-align`     | Inline code's vertical alignment; `baseline` suits code set at the body's size    | `middle`                |
+
+In Tailwind, `font-body`, `font-heading` and `text-body` read the same variables.
+Captions, buttons, link previews and the editor's own controls are not content
+and always stay in Inter.
+
 **SVGs**
 
 SVGs can be imported as React components in the [same way as create-react-app](https://create-react-app.dev/docs/adding-images-fonts-and-files/#adding-svgs). Typically files are stored in `src/assets/`.
@@ -71,17 +93,45 @@ All imported files are processed/optimised via SVGO (see `svgo.config.js` for op
 
 ## Testing
 
-We use [Vitest](https://vitest.dev) for unit tests and [Playwright](https://playwright.dev) for e2e testing.
+We use [Vitest](https://vitest.dev) for unit tests and
+[Playwright](https://playwright.dev) for browser acceptance testing. Ghost's
+end-to-end test suite lives in the repository's top-level
+[`e2e/`](../../e2e/) directory.
+
+Package tests live in `test/unit/` and `test/e2e/`, with shared test helpers in
+`test/utils/`.
 
 - `pnpm test` runs all tests and exits
 - `pnpm test:unit` runs unit tests
 - `pnpm test:unit:watch` runs unit tests and starts a test watcher that re-runs tests on file changes
 - `pnpm test:unit:watch --ui` runs unit tests and opens a browser UI for exploring and re-running tests
-- `pnpm test:e2e` runs e2e tests
-- `pnpm test:e2e --headed` runs tests in browser so you can watch the tests execute
-- `pnpm test:slowmo` same as `pnpm test:e2e --headed` but adds 100ms delay between instructions to make it easier to see what's happening (note that some tests may fail or timeout due to the added delays)
-- `pnpm test:e2e --ui` opens a [browser UI](https://playwright.dev/docs/test-ui-mode) in watch mode for exploring and re-running tests
-- `pnpm test:e2e --ui --headed` same as `pnpm test:e2e --ui` but also runs tests in browser so you can watch the tests execute
+- `pnpm test:acceptance` runs browser acceptance tests headlessly
+- `pnpm test:acceptance:headed` runs acceptance tests with the browser visible
+- `pnpm test:acceptance:report` generates an HTML report
+- `pnpm test:acceptance:quiet` uses minimal output, showing failures only
+- `pnpm test:acceptance --ui` opens Playwright's [UI mode](https://playwright.dev/docs/test-ui-mode)
+  in watch mode for exploring and re-running acceptance tests
+- `pnpm test:slowmo` runs headed acceptance tests with a 100ms delay between
+  instructions (some tests may fail or time out due to the added delays)
+
+Acceptance tests start their own Vite demo server on port 5185, separate from
+Admin's development server on 5174. They never reuse an existing server or move
+to another port if it is occupied. Set `KOENIG_TEST_PORT` when running tests from
+multiple worktrees, for example `KOENIG_TEST_PORT=5186 pnpm test:acceptance`.
+The port must be an integer between 1 and 65535.
+
+Use `pnpm dev:test` to run the test demo manually on the same configurable port.
+The acceptance runner requires that port to be free, so stop the manual server
+before running tests. For collaboration development, `pnpm dev:multiplayer`
+starts the demo and WebSocket server together; acceptance tests do not start the
+unused WebSocket server.
+
+The acceptance-test commands use these environment variables:
+
+- `KOENIG_TEST_PORT=5186` changes the demo server port.
+- `PLAYWRIGHT_HEADED=true` shows the browser UI.
+- `PLAYWRIGHT_HTML_REPORT=true` generates an HTML report.
+- `PLAYWRIGHT_SLOWMO=100` adds a delay in milliseconds between browser actions.
 
 Before tests are started we build a version of the demo app that is used for the unit tests.
 
@@ -89,13 +139,13 @@ When developing it can be useful to limit unit tests to specific keywords (taken
 
 - `pnpm test:unit:watch -t "buildCardMenu"`
 
-### How to debug e2e tests on CI
+### How to debug acceptance tests on CI
 
 You can download the report in case of tests were failed. It can be found in the actions `Summary` in the `Artifacts` section.
 To check traces, run command `npx playwright show-trace trace.zip`.
 More information about traces can be found here https://playwright.dev/docs/trace-viewer
 
-### ESM in e2e tests
+### ESM in acceptance tests
 
 Node enables ECMAScript modules if `type: 'module'` in package.json file. It leads to some restrictions:
 - [No require, exports, module.exports, __filename, __dirname](https://github.com/GrosSacASac/node/blob/master/doc/api/esm.md#no-require-exports-moduleexports-__filename-__dirname)
@@ -111,7 +161,7 @@ The same issue was raised in the babel repo, but the loader won't be added while
 in [experimental mode](https://github.com/babel/babel/issues/11934).
 
 We can add our loader implementation to solve the issue. Still, in reality, we shouldn't need real
-JSX components in e2e tests. It can be a situation when some constants locate in the `jsx` file. In this case,
+JSX components in acceptance tests. It can be a situation when some constants locate in the `jsx` file. In this case,
 we can move them to js file. If it is a problem in the future, we can add our implementation of the loader or
 add an extension to all imports in the project.
 
@@ -120,6 +170,7 @@ add an extension to all imports in the project.
 There's a [vitest vscode extension](https://marketplace.visualstudio.com/items?itemName=ZixuanChen.vitest-explorer) that
 lets you run and debug individual unit tests/groups directly inside vscode.
 
-## Deployment
+## Shipping
 
-Koenig packages are shipped via Lerna at the monorepo level. Please refer to the monorepo's [README](../../README.md) for deployment instructions.
+Koenig packages are versioned and published as part of the Ghost monorepo's
+workspace package release process. See the Koenig [shipping guide](../README.md#shipping).

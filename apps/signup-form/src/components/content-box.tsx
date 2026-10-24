@@ -1,13 +1,9 @@
-import React from 'react';
+import type { ComponentChildren } from 'preact';
 
 type ContentBoxProps = {
-    children: React.ReactNode
+  children: ComponentChildren;
 };
 
-export const ContentBox: React.FC<ContentBoxProps> = ({children}) => {
-    return (
-        <section>
-            {children}
-        </section>
-    );
+export const ContentBox = ({ children }: ContentBoxProps) => {
+  return <section>{children}</section>;
 };
