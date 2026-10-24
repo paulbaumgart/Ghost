@@ -125,7 +125,10 @@ COPY --chown=nobody:nogroup --from=deploy /home/ghost ./
 
 # cp -a preserves the nobody:nogroup ownership set at COPY time, so base_content
 # and default need no re-chown; only the writable content/log dirs flip to ghost.
-RUN mkdir -p default log && \
+# content/data is created explicitly: Ghost migrations expect it to exist on the
+# content volume and fail with ENOENT if the deploy output omitted the empty dir
+# (git does not track empty directories).
+RUN mkdir -p default log content/data && \
     cp -a content base_content && \
     cp -a content/themes/casper default/casper && \
     ([ -d content/themes/source ] && cp -a content/themes/source default/source || true) && \

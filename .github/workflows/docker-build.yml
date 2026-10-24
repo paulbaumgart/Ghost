@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: 'pnpm'
 
       - name: Build Admin Panel Assets
@@ -49,6 +49,8 @@ jobs:
           file: ./Dockerfile.production
           target: full
           push: true
+          # Always re-resolve the floating Node base tag (node:24-bookworm-slim)
+          # so each build picks up the latest 24.x patch release.
           pull: true
           tags: |
             ghcr.io/paulbaumgart/ghost:latest
