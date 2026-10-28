@@ -1,9 +1,8 @@
 import { z } from 'zod';
-import {
-  STRIPE_ALLOWED_COUNTRIES,
-  STRIPE_CHECKOUT_BORDER_STYLES,
-  STRIPE_CHECKOUT_FONTS,
-} from '@tryghost/checkout';
+import { STRIPE_CHECKOUT_BORDER_STYLES, STRIPE_CHECKOUT_FONTS } from '@tryghost/checkout';
+import { KeySchema } from '@tryghost/metafield-types/identity';
+import { COLLECTED_PARTS, type CollectedPart } from '@tryghost/checkout';
+import type { CamelToSnake, SnakeToCamel } from '../../lib/case-keys';
 
 /**
  * A color as a 6-digit hex code. It is lowercased, so the same color is always stored the same
@@ -46,44 +45,76 @@ const CollectedPart = z.object({
 export const ShippingSettings = CollectedPart.extend({
   /** ISO 3166-1 alpha-2 codes, or null for everywhere Stripe ships. */
   allowedCountries: z.array(z.string()).nullable(),
-  addressCustomFieldKey: z.string(),
-  nameCustomFieldKey: z.string(),
+  addressCustomFieldKey: KeySchema,
+  nameCustomFieldKey: KeySchema,
 });
 export type ShippingSettings = z.infer<typeof ShippingSettings>;
 
 /** Collecting a phone number at checkout, as the publisher set it. */
 export const PhoneSettings = CollectedPart.extend({
-  customFieldKey: z.string(),
+  customFieldKey: KeySchema,
 });
 export type PhoneSettings = z.infer<typeof PhoneSettings>;
 
+/**
+ * Letting a business buyer give a tax ID at checkout, as the publisher set it. Stripe keeps the
+ * tax ID on the customer and shows it on their invoices, so Ghost saves nothing and needs no
+ * custom field. It's called a tax number in code, as a name ending in `_id` reads as a reference
+ * to another record.
+ */
+export const TaxNumberSettings = CollectedPart;
+export type TaxNumberSettings = z.infer<typeof TaxNumberSettings>;
+
 /** Each collected part of the config as saved. */
-const COLLECTED_PARTS = {
+const COLLECTED_SETTINGS = {
   /** Null means checkout doesn't ask for a shipping address. */
   shipping: ShippingSettings.nullable(),
   /** Null means checkout doesn't ask for a phone number. */
   phone: PhoneSettings.nullable(),
+  /** Null means checkout doesn't let buyers give a tax ID. */
+  taxNumber: TaxNumberSettings.nullable(),
 } satisfies Record<CollectedSection, z.ZodType>;
 
 /** The site-wide Stripe Checkout config. */
 export const StripeCheckoutConfig = z.object({
   /** Null means Stripe uses the design set in the Stripe dashboard. */
   design: StripeCheckoutDesign.nullable(),
-  ...COLLECTED_PARTS,
+  ...COLLECTED_SETTINGS,
 });
 export type StripeCheckoutConfig = z.infer<typeof StripeCheckoutConfig>;
+
+/**
+ * The name in the model of each part of the config that asks the buyer for something, by the
+ * name the Admin API and the shared `COLLECTED_PARTS` give it.
+ */
+export const SECTION_OF = {
+  shipping: 'shipping',
+  phone: 'phone',
+  tax_number: 'taxNumber',
+} as const satisfies { [Part in CollectedPart]: SnakeToCamel<Part> };
+export type CollectedSection = (typeof SECTION_OF)[CollectedPart];
 
 /**
  * The parts of the config that ask the buyer for something, each on every paid tier or only
  * the ones it names.
  */
-export const COLLECTED_SECTIONS = ['shipping', 'phone'] as const;
-export type CollectedSection = (typeof COLLECTED_SECTIONS)[number];
+export const COLLECTED_SECTIONS = COLLECTED_PARTS.map((part) => SECTION_OF[part]);
+
+/**
+ * Each collected part's name where it is stored, in its own column and in the rows naming its
+ * tiers, which is also its name in the Admin API.
+ */
+export const SECTION_NAMES = {
+  shipping: 'shipping',
+  phone: 'phone',
+  taxNumber: 'tax_number',
+} as const satisfies { [Section in CollectedSection]: CamelToSnake<Section> };
 
 /** What each collected part asks the buyer for, as messages about it name it. */
 export const COLLECTED_NOUNS = {
   shipping: 'shipping address',
   phone: 'phone number',
+  taxNumber: 'tax ID',
 } as const satisfies Record<CollectedSection, string>;
 
 /**
@@ -94,7 +125,7 @@ export const COLLECTED_NOUNS = {
 export const COLLECTION_FLAG = 'stripeCheckoutCollection';
 
 /** What a checkout needs to know about every collected part to ask for it. */
-interface AskedPart extends z.infer<typeof CollectedPart> {
+export interface AskedPart extends z.infer<typeof CollectedPart> {
   /**
    * Whether checkouts can ask for it right now. A saved part can't while a field it can't do
    * without is archived or no longer holds what it collects, as the answer would have nowhere
@@ -107,9 +138,10 @@ interface AskedPart extends z.infer<typeof CollectedPart> {
  * What a checkout needs to know about each collected part to ask for it: which tiers ask and
  * how, without where the answers land.
  */
-interface AskedParts {
+export interface AskedParts {
   shipping: AskedPart & Pick<ShippingSettings, 'allowedCountries'>;
   phone: AskedPart;
+  taxNumber: AskedPart;
 }
 
 /**
@@ -121,62 +153,23 @@ export type CheckoutCollection = { [Section in CollectedSection]: AskedParts[Sec
 /** The config as checkouts use it: the design, and what each collected part asks for. */
 export type CheckoutSessionConfig = Pick<StripeCheckoutConfig, 'design'> & CheckoutCollection;
 
-/** The Checkout session parameters that ask the buyer for something. */
-export interface CollectionParams {
-  shipping_address_collection?: { allowed_countries: string[] };
-  phone_number_collection?: { enabled: true };
+/** How a checkout asks for each collected part once it asks for it at all. */
+export interface Asking {
+  shipping: Pick<ShippingSettings, 'allowedCountries'>;
+  /** Asked the same way on every checkout. */
+  phone: Record<string, never>;
+  /** Offered the same way on every checkout. */
+  taxNumber: Record<string, never>;
 }
 
-/** The Checkout session parameters that ask for each collected part. */
-const ASK: { [Section in CollectedSection]: (part: AskedParts[Section]) => CollectionParams } = {
-  shipping: (shipping) => ({
-    shipping_address_collection: {
-      // Stripe has no way to say everywhere, and a checkout without countries collects no
-      // address, so everywhere is every country Stripe accepts.
-      allowed_countries: shipping.allowedCountries ?? [...STRIPE_ALLOWED_COUNTRIES],
-    },
-  }),
-  phone: () => ({ phone_number_collection: { enabled: true } }),
-};
+/** How a checkout asks for each collected part, or null for each it doesn't ask for. */
+export type CheckoutAsks = { readonly [Section in CollectedSection]: Asking[Section] | null };
 
-/**
- * The Checkout session parameters that ask for what the collected parts collect on a checkout
- * for this paid tier: as saved, except for the parts a preview replaces. A part asks for
- * nothing on a tier it doesn't cover, or while it has nowhere to keep the answer.
- */
-export function collectionParams(
-  saved: CheckoutCollection | null,
-  tierId: string,
-  previewed: Partial<CheckoutCollection> = {},
-): CollectionParams {
-  const collection = withPreviewed(saved, previewed);
-  const ask = <Section extends CollectedSection>(
-    section: Section,
-    part: AskedParts[Section] | null,
-  ): CollectionParams => (part !== null && asksOn(part, tierId) ? ASK[section](part) : {});
-  return COLLECTED_SECTIONS.reduce<CollectionParams>(
-    (params, section) => ({ ...params, ...ask(section, collection[section]) }),
-    {},
-  );
-}
-
-/**
- * The collected parts as saved, with the parts a preview gives in their place. A part the
- * preview gives as undefined asks as saved, like one it leaves out.
- */
-function withPreviewed(
-  saved: CheckoutCollection | null,
-  previewed: Partial<CheckoutCollection>,
-): CheckoutCollection {
-  return {
-    shipping: previewed.shipping !== undefined ? previewed.shipping : (saved?.shipping ?? null),
-    phone: previewed.phone !== undefined ? previewed.phone : (saved?.phone ?? null),
-  };
-}
-
-/** Whether a checkout for this paid tier asks for what a collected part collects. */
-function asksOn(part: AskedPart, tierId: string) {
-  return part.collectable && (part.tierIds === null || part.tierIds.includes(tierId));
+/** How a Stripe Checkout page looks and what it asks the buyer for. */
+export interface CheckoutDefinition {
+  /** Null sends none, so Stripe shows the design set in the Stripe dashboard. */
+  readonly design: StripeCheckoutDesign | null;
+  readonly asks: CheckoutAsks;
 }
 
 /**

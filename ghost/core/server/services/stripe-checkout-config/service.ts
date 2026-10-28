@@ -1,41 +1,59 @@
 import ObjectID from 'bson-objectid';
 import errors from '@tryghost/errors';
+import type { GhostLogger } from '@tryghost/logging';
 import { z } from 'zod';
 import type { Knex } from 'knex';
 import { PORT_FIELD, STRIPE_PORT, STRIPE_PORTS, type StripePort } from '@tryghost/checkout';
-import { FIELD_STATUS } from '../members-metafields/schema';
+import type { FieldStatus } from '../members-metafields/schema';
+import type { FieldSource } from '../members-metafields';
+import {
+  CUSTOM_NAMESPACE,
+  type Identity,
+  type Key,
+  KeySchema,
+} from '@tryghost/metafield-types/identity';
+import { snakeKeys } from '../../lib/case-keys';
 import { toDatabaseDate } from '../../lib/db-types/date';
 import type { RecordCheckoutConfigAction, RequestContext } from './actions';
-import { ConfigRow, type TierScope } from './codec';
+import { configRow, type ConfigRowSchema, type TierScope } from './codec';
 import {
   COLLECTED_NOUNS,
   COLLECTED_SECTIONS,
+  SECTION_NAMES,
   type CheckoutSessionConfig,
   type CollectedSection,
   type PhoneSettings,
   type ShippingSettings,
   type StripeCheckoutConfig,
+  type TaxNumberSettings,
 } from './models';
-import { CONFIG_SLUG, CONFIG_TABLE, CONFIG_TIERS_TABLE } from './schema';
-import { CheckoutConfigInput, parseRequest } from './serializers';
+import { CONFIG_SLUG, CONFIG_TABLE, CONFIG_TIERS_TABLE, DbConfigParts, DbSection } from './schema';
+import { parseRequest } from '../../lib/parse-request';
+import { CheckoutConfigInput } from './serializers';
 
+// A `custom_field_key` is a key in the publisher's `custom` namespace, so the config reads and
+// checks only the bindings and fields there.
 const BINDINGS_TABLE = 'members_metafield_bindings';
-const FIELDS_TABLE = 'members_metafields';
+/** A custom field that can take a value: not archived. */
+const ACTIVE: FieldStatus = 'active';
 
 /** The settings a request saves for each collected part of the config. */
 type CollectedSettings = {
   [Section in CollectedSection]: NonNullable<CheckoutConfigInput[Section]>;
 };
 
-/** What a collected part keeps in its own column of the config row. */
-type StoredPart<Section extends CollectedSection> = NonNullable<
-  z.output<typeof ConfigRow>[Section]
->;
+/** What each collected part keeps in its own column of the config row. */
+type StoredParts = {
+  [Section in CollectedSection]: NonNullable<
+    z.output<ConfigRowSchema>[(typeof SECTION_NAMES)[Section]]
+  >;
+};
+type StoredPart<Section extends CollectedSection> = StoredParts[Section];
 
 /** A custom field a request names for a port, and how to say it can't take the port's values. */
 interface Destination {
   port: StripePort;
-  customFieldKey: string;
+  customFieldKey: Key;
   /** The request property naming the field. */
   property: string;
   wrongType: string;
@@ -52,7 +70,7 @@ const PARTS: {
     stored: (settings: CollectedSettings[Section]) => StoredPart<Section>;
     destinations: Array<
       Omit<Destination, 'customFieldKey'> & {
-        customFieldKey: (settings: CollectedSettings[Section]) => string;
+        customFieldKey: (settings: CollectedSettings[Section]) => Key;
         /**
          * Whether checkouts stop asking for the part while this field can't take a value, as
          * the answer would have nowhere to go.
@@ -100,6 +118,11 @@ const PARTS: {
       },
     ],
   },
+  taxNumber: {
+    stored: (taxNumber) => ({ tier_scope: tierScopeOf(taxNumber) }),
+    // Stripe keeps the tax ID on the customer, so Ghost saves nothing from it.
+    destinations: [],
+  },
 };
 
 /** The ports the collected parts bind to custom fields, each with what its field holds. */
@@ -115,7 +138,7 @@ function tierScopeOf({ tierIds }: { tierIds: string[] | null }): TierScope {
 }
 
 /** The collected parts a request includes, each with its settings, or null to switch it off. */
-type RequestedParts = { [Section in CollectedSection]?: CollectedSettings[Section] | null };
+export type RequestedParts = { [Section in CollectedSection]?: CollectedSettings[Section] | null };
 
 /**
  * What saving a collected part settles: the tiers it is limited to, or null for every paid tier,
@@ -127,6 +150,14 @@ interface Change {
     tierIds: string[] | null;
     destinations: Destination[];
   } | null;
+}
+
+/** What saving the parts in a request settles, for the parts it includes. */
+function changesOf(requested: RequestedParts): Change[] {
+  return COLLECTED_SECTIONS.flatMap((section) => {
+    const settings = requested[section];
+    return settings === undefined ? [] : [changeOf(section, settings)];
+  });
 }
 
 function changeOf<Section extends CollectedSection>(
@@ -150,7 +181,7 @@ function changeOf<Section extends CollectedSection>(
   };
 }
 
-/** The columns the collected parts in a request are stored in. */
+/** What the collected parts in a request keep in their columns, by part. */
 function storedColumns(requested: RequestedParts): {
   [Section in CollectedSection]?: StoredPart<Section> | null;
 } {
@@ -171,14 +202,11 @@ function storedColumns(requested: RequestedParts): {
  * and that field again only while it is active (or nulls). A config whose parts name several
  * tiers or bind several ports comes back as a row for each pairing.
  */
-const ReadRow = z.object({
-  design: z.string().nullable(),
-  shipping: z.string().nullable(),
-  phone: z.string().nullable(),
-  section: z.enum(COLLECTED_SECTIONS).nullable(),
+const ReadRow = DbConfigParts.extend({
+  section: DbSection.nullable(),
   paid_tier_id: z.string().nullable(),
   port: z.enum(STRIPE_PORTS).nullable(),
-  bound_key: z.string().nullable(),
+  bound_key: z.nullable(KeySchema),
   active_key: z.string().nullable(),
   active_type: z.string().nullable(),
 });
@@ -186,7 +214,7 @@ type ReadRow = z.output<typeof ReadRow>;
 
 /** A port's custom field as the read found it, and whether it can take a value right now. */
 interface Bound {
-  customFieldKey: string;
+  customFieldKey: Key;
   ready: boolean;
 }
 
@@ -206,33 +234,49 @@ function boundFields(rows: ReadRow[]): Map<StripePort, Bound> {
 }
 
 const LockedTier = z.object({ id: z.string(), type: z.string() });
-const LockedField = z.object({ key: z.string(), type: z.string(), status: z.string() });
-const LockedBinding = z.object({ port: z.enum(STRIPE_PORTS), metafield_key: z.string() });
+const LockedField = z.object({ key: KeySchema, type: z.string(), status: z.string() });
+const LockedBinding = z.object({ port: z.enum(STRIPE_PORTS), metafield_key: KeySchema });
 
-/** Points a port at a custom field, or stops it writing anywhere. */
+/** Points a port at a field, or stops it writing anywhere. */
 export interface PortBinder {
-  bind(db: Knex, port: string, customFieldKey: string, now: Date): Promise<string>;
+  bind(
+    db: Knex,
+    port: string,
+    field: Pick<Identity, 'namespace' | 'key'>,
+    now: Date,
+  ): Promise<string>;
   remove(db: Knex, port: string): Promise<void>;
 }
+
+/** The custom fields as the metafields domain reads them for this site. */
+type FieldReads = Pick<FieldSource, 'table' | 'locked'>;
 
 /** Reads and saves the site-wide Stripe Checkout config. */
 export class StripeCheckoutConfigService {
   private knex: Knex;
   private recordAction: RecordCheckoutConfigAction;
   private bindings: PortBinder;
+  private fields: FieldReads;
+  private configRow: ConfigRowSchema;
 
   constructor({
     knex,
     recordAction,
     bindings,
+    fields,
+    logging,
   }: {
     knex: Knex;
     recordAction: RecordCheckoutConfigAction;
     bindings: PortBinder;
+    fields: FieldReads;
+    logging: GhostLogger;
   }) {
     this.knex = knex;
     this.recordAction = recordAction;
     this.bindings = bindings;
+    this.fields = fields;
+    this.configRow = configRow(logging);
   }
 
   /**
@@ -250,9 +294,21 @@ export class StripeCheckoutConfigService {
   /**
    * Reads the config as checkouts use it: the design, and for each collected part the tiers it
    * asks on and whether it can ask right now.
+   *
+   * Parts given unsaved take the place of the saved ones, refused as saving them would be, so a
+   * preview asks for each part exactly as checkouts would once it was saved. Nothing is written.
    */
-  async readForCheckout(): Promise<CheckoutSessionConfig> {
-    const { config, bound } = await this.readSaved();
+  async readForCheckout(unsaved: RequestedParts = {}): Promise<CheckoutSessionConfig> {
+    const changes = changesOf(unsaved);
+    // Checked in the same transaction as the read, so both see the same tiers and fields.
+    const { named, saved } = changes.length
+      ? await this.knex.transaction(async (trx) => ({
+          named: await assertTargets(trx, changes, this.fields),
+          saved: await this.readSaved(trx),
+        }))
+      : { named: new Map<StripePort, Bound>(), saved: await this.readSaved() };
+    const config = { ...saved.config, ...unsaved };
+    const bound = new Map([...saved.bound, ...named]);
     return {
       design: config.design,
       shipping: config.shipping && {
@@ -264,37 +320,46 @@ export class StripeCheckoutConfigService {
         tierIds: config.phone.tierIds,
         collectable: collectableFrom('phone', bound),
       },
+      taxNumber: config.taxNumber && {
+        tierIds: config.taxNumber.tierIds,
+        collectable: collectableFrom('taxNumber', bound),
+      },
     };
   }
 
   /** The config as saved, and the custom field each port is bound to. */
-  private async readSaved(): Promise<{
+  private async readSaved(db: Knex = this.knex): Promise<{
     config: StripeCheckoutConfig;
     bound: Map<StripePort, Bound>;
   }> {
     const rows = z.array(ReadRow).parse(
-      await this.knex(`${CONFIG_TABLE} as config`)
+      await db(`${CONFIG_TABLE} as config`)
         // Every part's tiers in one join and every port in another, so the rows grow with the
         // tiers times the ports, rather than with a join per part and per port multiplied
         // together.
         .leftJoin(`${CONFIG_TIERS_TABLE} as named`, (join) =>
-          join.onIn('named.section', [...COLLECTED_SECTIONS]),
+          join.onIn(
+            'named.section',
+            COLLECTED_SECTIONS.map((section) => z.encode(DbSection, section)),
+          ),
         )
         .leftJoin('products as tier', (join) =>
           join.on('tier.id', '=', 'named.product_id').andOnVal('tier.type', '=', 'paid'),
         )
         .leftJoin(`${BINDINGS_TABLE} as binding`, (join) =>
-          join.onIn('binding.port', COLLECTED_PORTS),
-        )
-        .leftJoin(`${FIELDS_TABLE} as field`, (join) =>
           join
-            .on('field.key', '=', 'binding.metafield_key')
-            .andOnVal('field.status', '=', FIELD_STATUS.active),
+            .onIn('binding.port', COLLECTED_PORTS)
+            .andOnVal('binding.metafield_namespace', '=', CUSTOM_NAMESPACE),
+        )
+        .leftJoin(this.fields.table(db, 'field'), (join) =>
+          join
+            .on('field.namespace', '=', 'binding.metafield_namespace')
+            .andOn('field.key', '=', 'binding.metafield_key')
+            .andOnVal('field.status', '=', ACTIVE),
         )
         .where('config.slug', CONFIG_SLUG)
         .select(
-          'config.design',
-          ...COLLECTED_SECTIONS.map((section) => `config.${section}`),
+          ...DbConfigParts.keyof().options.map((column) => `config.${column}`),
           'named.section',
           'tier.id as paid_tier_id',
           'binding.port',
@@ -307,14 +372,15 @@ export class StripeCheckoutConfigService {
     const [first] = rows;
     const bound = boundFields(rows);
     if (!first) {
-      return { config: { design: null, shipping: null, phone: null }, bound };
+      return { config: { design: null, shipping: null, phone: null, taxNumber: null }, bound };
     }
-    const { design, shipping, phone } = z.decode(ConfigRow, first);
+    const { design, shipping, phone, tax_number: taxNumber } = z.decode(this.configRow, first);
     return {
       config: {
         design,
         shipping: shipping && shippingFrom(shipping, tierIdsOf('shipping', shipping, rows), bound),
         phone: phone && phoneFrom(tierIdsOf('phone', phone, rows), bound),
+        taxNumber: taxNumber && taxNumberFrom(tierIdsOf('taxNumber', taxNumber, rows)),
       },
       bound,
     };
@@ -330,19 +396,16 @@ export class StripeCheckoutConfigService {
   async edit(context: RequestContext, input: unknown): Promise<void> {
     const { design, ...requested } = parseRequest(CheckoutConfigInput, input, 'checkout_config');
     // Only the parts in the request are written, so saving one part never overwrites another.
-    const changes = COLLECTED_SECTIONS.flatMap((section) => {
-      const settings = requested[section];
-      return settings === undefined ? [] : [changeOf(section, settings)];
-    });
-    const columns = z.encode(ConfigRow.partial(), {
+    const changes = changesOf(requested);
+    const columns = z.encode(this.configRow.partial(), {
       ...(design === undefined ? {} : { design }),
-      ...storedColumns(requested),
+      ...snakeKeys(storedColumns(requested)),
     });
     const at = new Date();
     const now = toDatabaseDate(at);
 
     await this.knex.transaction(async (trx) => {
-      await assertTargets(trx, changes);
+      await assertTargets(trx, changes, this.fields);
 
       await trx(CONFIG_TABLE)
         .insert({
@@ -379,16 +442,22 @@ export class StripeCheckoutConfigService {
     { section, targets }: Change,
     now: Date,
   ): Promise<void> {
-    await trx(CONFIG_TIERS_TABLE).where('section', section).del();
+    const name = z.encode(DbSection, section);
+    await trx(CONFIG_TIERS_TABLE).where('section', name).del();
     if (targets?.tierIds) {
       await trx(CONFIG_TIERS_TABLE).insert(
-        targets.tierIds.map((productId) => ({ section, product_id: productId })),
+        targets.tierIds.map((productId) => ({ section: name, product_id: productId })),
       );
     }
 
     if (targets) {
       for (const { port, customFieldKey } of targets.destinations) {
-        await this.bindings.bind(trx, port, customFieldKey, now);
+        await this.bindings.bind(
+          trx,
+          port,
+          { namespace: CUSTOM_NAMESPACE, key: customFieldKey },
+          now,
+        );
       }
     } else {
       for (const { port } of PARTS[section].destinations) {
@@ -447,6 +516,11 @@ function phoneFrom(tierIds: string[] | null, bound: Map<StripePort, Bound>): Pho
   return { tierIds, customFieldKey: field.customFieldKey };
 }
 
+/** The tax ID settings as the read found them, or null once every tier they named is gone. */
+function taxNumberFrom(tierIds: string[] | null): TaxNumberSettings | null {
+  return tierIds?.length === 0 ? null : { tierIds };
+}
+
 /** Whether checkouts can ask for a part: while every field it can't do without can take a value. */
 function collectableFrom(section: CollectedSection, bound: Map<StripePort, Bound>): boolean {
   return PARTS[section].destinations.every(
@@ -466,13 +540,19 @@ function collectableFrom(section: CollectedSection, bound: Map<StripePort, Bound
  * its port supplies. A publisher who named a field meant that field, so being told now beats
  * finding out later that nothing was saved. Each port needs a field of its own, as two ports
  * writing one field would overwrite each other on every checkout.
+ *
+ * Returns the custom field each port the parts name would be bound to once saved.
  */
-async function assertTargets(trx: Knex.Transaction, changes: Change[]) {
+async function assertTargets(
+  trx: Knex.Transaction,
+  changes: Change[],
+  fieldReads: FieldReads,
+): Promise<Map<StripePort, Bound>> {
   const switchedOn = changes.flatMap(({ section, targets }) =>
     targets ? [{ section, ...targets }] : [],
   );
   if (!switchedOn.length) {
-    return;
+    return new Map();
   }
 
   const tierIds = [...new Set(switchedOn.flatMap((part) => part.tierIds ?? []))];
@@ -489,26 +569,27 @@ async function assertTargets(trx: Knex.Transaction, changes: Change[]) {
         message: typeOfTier.has(unusable)
           ? `Only paid tiers have a checkout to collect a ${COLLECTED_NOUNS[section]} at.`
           : `Unknown tier: ${unusable}`,
-        property: `${section}.tier_ids`,
+        property: `${SECTION_NAMES[section]}.tier_ids`,
       });
     }
   }
 
   const destinations = switchedOn.flatMap((part) => part.destinations);
   const fields = z.array(LockedField).parse(
-    await trx(FIELDS_TABLE)
-      .whereIn(
-        'key',
+    await fieldReads
+      .locked(
+        trx,
+        CUSTOM_NAMESPACE,
         destinations.map((destination) => destination.customFieldKey),
       )
-      .select('key', 'type', 'status')
-      .forShare(),
+      .select('key', 'type', 'status'),
   );
   const bindings = z
     .array(LockedBinding)
     .parse(
       await trx(BINDINGS_TABLE)
         .whereIn('port', COLLECTED_PORTS)
+        .where('metafield_namespace', CUSTOM_NAMESPACE)
         .select('port', 'metafield_key')
         .forUpdate(),
     );
@@ -524,7 +605,7 @@ async function assertTargets(trx: Knex.Transaction, changes: Change[]) {
     }
     // Keeping a field that was archived after it was chosen is allowed, so a client can save
     // back what it read. Nothing is written to it while it stays archived.
-    if (field.status !== FIELD_STATUS.active && chosen.get(port) !== customFieldKey) {
+    if (field.status !== ACTIVE && chosen.get(port) !== customFieldKey) {
       throw new errors.ValidationError({
         message: 'An archived custom field cannot receive collected data. Restore it first.',
         property,
@@ -557,4 +638,16 @@ async function assertTargets(trx: Knex.Transaction, changes: Change[]) {
       });
     }
   }
+
+  return new Map(
+    destinations.map(({ port, customFieldKey }): [StripePort, Bound] => [
+      port,
+      {
+        customFieldKey,
+        // Each field was checked to be the type its port supplies, so only an archived one
+        // kept from before can't take a value.
+        ready: fields.some((field) => field.key === customFieldKey && field.status === ACTIVE),
+      },
+    ]),
+  );
 }

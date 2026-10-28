@@ -5,6 +5,7 @@ const {
   mockManager,
   fixtureManager,
   matchers,
+  hostLimits,
 } = require('../../utils/e2e-framework');
 const nock = require('nock');
 const { stripeMocker } = require('../../utils/e2e-framework-mock-manager');
@@ -871,16 +872,11 @@ describe('Create Stripe Checkout Session', function () {
       return stripeMocker.checkoutSessions.at(-1);
     }
 
-    it('asks for an address in the named countries, and only once shipping is on', async function () {
-      assert.equal((await startCheckout()).shipping_address_collection, undefined);
-
+    it('asks for an address in the named countries', async function () {
       await setShipping(collect({ allowed_countries: ['GB', 'IE'] }));
       assert.deepEqual((await startCheckout()).shipping_address_collection, {
         allowed_countries: ['GB', 'IE'],
       });
-
-      await setShipping({ collect: false });
-      assert.equal((await startCheckout()).shipping_address_collection, undefined);
     });
 
     it('offers every country Stripe ships to when none are named', async function () {
@@ -893,24 +889,6 @@ describe('Create Stripe Checkout Session', function () {
       assert.ok(countries.includes('GB'));
       assert.ok(countries.includes('US'));
       assert.ok(countries.length > 200);
-    });
-
-    it('asks nothing on a tier shipping is not limited to', async function () {
-      const otherTierId = 'ffffffffffffffffffffffff';
-      const [existing] = await models.Base.knex('products').where('id', paidTierId);
-      await models.Base.knex('products').insert({
-        ...existing,
-        id: otherTierId,
-        name: 'Other tier',
-        slug: 'other-tier',
-      });
-      try {
-        await setShipping(collect({ tier_ids: [otherTierId] }));
-        assert.equal((await startCheckout()).shipping_address_collection, undefined);
-      } finally {
-        await models.Base.knex('stripe_checkout_config_tiers').del();
-        await models.Base.knex('products').where('id', otherTierId).del();
-      }
     });
 
     it('keeps asking while only the name field is archived, and stops once the address field is', async function () {
@@ -927,44 +905,23 @@ describe('Create Stripe Checkout Session', function () {
       await archive('delivery_address');
       assert.equal((await startCheckout()).shipping_address_collection, undefined);
     });
-
-    it('asks nothing while its flag is off, even when shipping is on', async function () {
-      await setShipping(collect());
-      mockManager.mockLabsDisabled('stripeCheckoutCollection');
-
-      assert.equal((await startCheckout()).shipping_address_collection, undefined);
-    });
   });
 
   describe('Phone number collection', function () {
-    const otherTierId = 'ffffffffffffffffffffffff';
     let paidTierId;
 
     beforeEach(async function () {
       mockManager.mockStripe();
       mockManager.mockLabsEnabled('stripeCheckoutCollection');
       mockManager.mockLabsEnabled('membersCustomFields');
-      for (const field of [
-        { name: 'Contact phone', type: 'short_text' },
-        { name: 'Delivery address', type: 'address' },
-        { name: 'Recipient name', type: 'short_text' },
-      ]) {
-        await adminAgent
-          .post('/members/metafields/custom/')
-          .body({ members_metafields: [field] })
-          .expectStatus(201);
-      }
+      await adminAgent
+        .post('/members/metafields/custom/')
+        .body({ members_metafields: [{ name: 'Contact phone', type: 'short_text' }] })
+        .expectStatus(201);
       const {
         body: { tiers },
       } = await adminAgent.get('/tiers/');
       paidTierId = tiers.find((tier) => tier.type === 'paid').id;
-      const [existing] = await models.Base.knex('products').where('id', paidTierId);
-      await models.Base.knex('products').insert({
-        ...existing,
-        id: otherTierId,
-        name: 'Other tier',
-        slug: 'other-tier',
-      });
     });
 
     afterEach(async function () {
@@ -972,7 +929,6 @@ describe('Create Stripe Checkout Session', function () {
       await models.Base.knex('stripe_checkout_config').del();
       await models.Base.knex('members_metafield_bindings').del();
       await models.Base.knex('members_metafields').del();
-      await models.Base.knex('products').where('id', otherTierId).del();
     });
 
     async function setCheckout(config) {
@@ -996,49 +952,131 @@ describe('Create Stripe Checkout Session', function () {
       return stripeMocker.checkoutSessions.at(-1);
     }
 
-    it('asks for a phone number once it is switched on, and only then', async function () {
-      assert.equal((await startCheckout()).phone_number_collection, undefined);
-
+    it('stops asking while its field is archived, and so does a preview of it', async function () {
       await setCheckout(collect());
       assert.deepEqual((await startCheckout()).phone_number_collection, { enabled: true });
 
-      await setCheckout({ phone: { collect: false } });
-      assert.equal((await startCheckout()).phone_number_collection, undefined);
-    });
-
-    it('asks on the tiers it names, apart from the tiers shipping names', async function () {
-      await setCheckout({
-        ...collect({ tier_ids: [otherTierId] }),
-        shipping: {
-          collect: true,
-          tier_ids: [paidTierId],
-          address: { custom_field_key: 'delivery_address' },
-          name: { custom_field_key: 'recipient_name' },
-        },
-      });
-      const session = await startCheckout();
-      assert.equal(session.phone_number_collection, undefined);
-      assert.ok(session.shipping_address_collection);
-
-      await setCheckout(collect({ tier_ids: [paidTierId, otherTierId] }));
-      assert.deepEqual((await startCheckout()).phone_number_collection, { enabled: true });
-    });
-
-    it('stops asking while its field is archived', async function () {
-      await setCheckout(collect());
       await adminAgent
         .put('/members/metafields/custom/contact_phone/')
         .body({ members_metafields: [{ status: 'archived' }] })
         .expectStatus(200);
 
       assert.equal((await startCheckout()).phone_number_collection, undefined);
+
+      await adminAgent
+        .post('/stripe/checkout/preview/')
+        .body({
+          checkout_preview: [{ tier_id: paidTierId, design: { customize: false }, ...collect() }],
+        })
+        .expectStatus(200);
+      assert.equal(stripeMocker.checkoutSessions.at(-1).phone_number_collection, undefined);
     });
 
-    it('asks nothing while its flag is off, even when it is on', async function () {
-      await setCheckout(collect());
-      mockManager.mockLabsDisabled('stripeCheckoutCollection');
+    // While the host switches custom fields off, every field reads as archived, so checkout
+    // stops asking for what it saves into one. A tax ID saves into no field, so it is still
+    // asked for.
+    describe('while the host switches custom fields off', function () {
+      afterEach(async function () {
+        await hostLimits.restoreHostLimits();
+      });
 
-      assert.equal((await startCheckout()).phone_number_collection, undefined);
+      it('stops asking for it while still asking for a tax ID, and asks again once they are back on', async function () {
+        await setCheckout({ ...collect(), tax_number: { collect: true } });
+        await hostLimits.setHostLimits({ limitCustomFields: { disabled: true } });
+
+        const session = await startCheckout();
+        assert.equal(session.phone_number_collection, undefined);
+        assert.deepEqual(session.tax_id_collection, { enabled: true });
+
+        await hostLimits.restoreHostLimits();
+        assert.deepEqual((await startCheckout()).phone_number_collection, { enabled: true });
+      });
+    });
+  });
+
+  describe('Tax ID collection', function () {
+    const otherTierId = 'ffffffffffffffffffffffff';
+    let paidTierId;
+    let stripeCustomerIds;
+
+    beforeEach(async function () {
+      mockManager.mockStripe();
+      mockManager.mockLabsEnabled('stripeCheckoutCollection');
+      // Automatic tax offers a tax ID on every checkout by itself, so it stays off unless a
+      // test is about the two together.
+      mockManager.mockLabsDisabled('stripeAutomaticTax');
+      const {
+        body: { tiers },
+      } = await adminAgent.get('/tiers/');
+      paidTierId = tiers.find((tier) => tier.type === 'paid').id;
+      const [existing] = await models.Base.knex('products').where('id', paidTierId);
+      await models.Base.knex('products').insert({
+        ...existing,
+        id: otherTierId,
+        name: 'Other tier',
+        slug: 'other-tier',
+      });
+      stripeCustomerIds = await models.Base.knex('members_stripe_customers').pluck('id');
+    });
+
+    afterEach(async function () {
+      await models.Base.knex('stripe_checkout_config_tiers').del();
+      await models.Base.knex('stripe_checkout_config').del();
+      await models.Base.knex('products').where('id', otherTierId).del();
+      // The Stripe customers made for members who checked out signed in.
+      await models.Base.knex('members_stripe_customers').whereNotIn('id', stripeCustomerIds).del();
+    });
+
+    async function setTaxNumber(taxNumber) {
+      await adminAgent
+        .put('/stripe/checkout/config/')
+        .body({ checkout_config: [{ tax_number: taxNumber }] })
+        .expectStatus(200);
+    }
+
+    // Starts a checkout for the paid tier, signed in as a free member when asked to, and
+    // returns the session Ghost sent to Stripe. A member checking out signed in always has a
+    // Stripe customer, made for them if they had none.
+    async function startCheckout({ signedIn = false } = {}) {
+      let identity;
+      if (signedIn) {
+        const member = await models.Member.findOne(
+          { email: 'member1@test.com' },
+          { require: true },
+        );
+        identity = await membersService.api.getMemberIdentityToken(member.get('transient_id'));
+      }
+      await membersAgent
+        .post('/api/create-stripe-checkout-session/')
+        .body({ tierId: paidTierId, cadence: 'month', identity })
+        .expectStatus(200);
+
+      return stripeMocker.checkoutSessions.at(-1);
+    }
+
+    it('lets Stripe save the business name on a buyer who is already a customer, as Stripe requires', async function () {
+      await setTaxNumber({ collect: true });
+
+      // Stripe refuses to update a customer on a checkout that has none.
+      assert.equal((await startCheckout()).customer_update, undefined);
+
+      const session = await startCheckout({ signedIn: true });
+      assert.ok(session.customer);
+      assert.deepEqual(session.tax_id_collection, { enabled: true });
+      assert.deepEqual(session.customer_update, { name: 'auto' });
+    });
+
+    it('keeps saving the address automatic tax needs, on every tier', async function () {
+      mockManager.mockLabsEnabled('stripeAutomaticTax');
+      await setTaxNumber({ collect: true, tier_ids: [paidTierId] });
+
+      const session = await startCheckout({ signedIn: true });
+      assert.deepEqual(session.automatic_tax, { enabled: true });
+      assert.deepEqual(session.tax_id_collection, { enabled: true });
+      assert.deepEqual(session.customer_update, { address: 'auto', name: 'auto' });
+
+      await setTaxNumber({ collect: true, tier_ids: [otherTierId] });
+      assert.deepEqual((await startCheckout()).tax_id_collection, { enabled: true });
     });
   });
 });

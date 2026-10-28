@@ -1,32 +1,12 @@
-import errors from '@tryghost/errors';
-import { upperFirst } from 'lodash';
 import type { Controller, Frame } from '@tryghost/api-framework';
-import {
-  COLLECTED_NOUNS,
-  COLLECTED_SECTIONS,
-  COLLECTION_FLAG,
-  actingContext,
-  service as checkoutConfig,
-} from '../../services/stripe-checkout-config';
+import stripeCheckoutConfig from '../../services/stripe-checkout-config';
 import type { StripeCheckoutConfig } from '../../services/stripe-checkout-config';
+import { COLLECTION_FLAG } from '../../services/stripe-checkout-config/models';
+import { refuseCollectionWhileOff } from '../../services/stripe-checkout-config/serializers';
 
 const labs = require('../../../shared/labs');
 
 type EditFrame = Frame<{ data: { checkout_config: unknown[] } }>;
-
-/** The collected parts are still in development, so they can't be saved while their flag is off. */
-function refuseCollectionWhileOff(input: unknown): void {
-  if (labs.isSet(COLLECTION_FLAG) || typeof input !== 'object' || input === null) {
-    return;
-  }
-  const section = COLLECTED_SECTIONS.find((candidate) => candidate in input);
-  if (section) {
-    throw new errors.ValidationError({
-      message: `${upperFirst(COLLECTED_NOUNS[section])} collection is not available yet.`,
-      property: section,
-    });
-  }
-}
 
 /**
  * The site-wide Stripe Checkout config.
@@ -42,7 +22,7 @@ const controller = {
     headers: { cacheInvalidate: false },
     permissions: { docName: 'products', method: 'read' },
     query(): Promise<StripeCheckoutConfig> {
-      return checkoutConfig!.read();
+      return stripeCheckoutConfig.service.config.read();
     },
   },
 
@@ -51,9 +31,10 @@ const controller = {
     permissions: { docName: 'products', method: 'edit' },
     async query(frame: EditFrame): Promise<StripeCheckoutConfig> {
       const [input] = frame.data.checkout_config;
-      refuseCollectionWhileOff(input);
-      await checkoutConfig!.edit(actingContext(frame.options.context), input);
-      return checkoutConfig!.read();
+      refuseCollectionWhileOff(input, labs.isSet(COLLECTION_FLAG));
+      const { config } = stripeCheckoutConfig.service;
+      await config.edit(stripeCheckoutConfig.extras.actingContext(frame.options.context), input);
+      return config.read();
     },
   },
 } satisfies Controller<{
