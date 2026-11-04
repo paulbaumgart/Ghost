@@ -119,8 +119,8 @@ List a group with `list --group <group>`. Report tables show group IDs;
 ```sh
 pnpm gx services list --group straightforward-clear
 pnpm gx services list --group needs-preparation
-pnpm gx services list --group unmigrated-retained
-pnpm gx services list --group ownership-undecided
+pnpm gx services list --group to-migrate
+pnpm gx services list --group undecided
 pnpm gx services list --group migrated --json
 ```
 
@@ -132,34 +132,35 @@ It replaces `pnpm audit:services`; `services dependencies` replaces
 
 ### Interpreting the reports
 
-Counts are calculated from the checkout, not stored in the inventory. The first
-table separates ownership from migration progress. Its three ownership rows
-(`retain`, `relocate`, `review`) sum to the catalogue total; migrated and
-unmigrated columns sum to each row's total. A migrated entry marked for relocation
-appears in both the migrated column and the relocation row. Migration does not
-complete its move. The `relocation` filter includes these migrated entries.
+Counts are calculated from the checkout, not stored in the inventory. The report
+shows one table with `MIGRATION`, `COUNT` and `GROUP` columns. Disposition
+(**Migrate**, **Relocate**, **Split** or **Undecided**) and migration progress
+are counted independently. See the [services README](../../ghost/core/server/services/README.md)
+for what each disposition means.
 
-The retained-work table partitions **Staying in services/** into three groups:
+Migration progress has three groups:
 
-- **Migrated:** marked `migrated: true`.
+- **Migrated:** marked `migrated: true`, whatever the disposition, so this
+  group can overlap Relocate and Split.
 - **Needs preparation:** not migrated, and either assessment is
   complex or identifies a possible model change.
 - **Straightforward:** not migrated, both assessments are
   straightforward, and the existing model fits. This can still include
   dependency violations and test gaps.
 
-The `unmigrated-retained` filter shows what's left to migrate:
-**needs preparation + straightforward**. It excludes relocation and undecided
-ownership. Entries needing a decision before proceeding use the existing
-`disposition: review` and appear under `ownership-undecided`; their notes and
-migration assessments explain the work needed.
+The `to-migrate` filter shows what's left to migrate:
+**needs preparation + straightforward**. Relocations, splits and undecided
+entries are listed by the `relocate`, `split` and `undecided` filters; their
+notes and migration assessments explain the work needed.
+
+Per-service reports show an entry's optional `futureHome`, a suggested home
+after this migration. It does not change the entry's group.
 
 Lists and per-service JSON expose independent `ownership` and `migrationStatus`
 fields instead of a combined category. Summary JSON retains labelled counts;
 ownership counts sum to **Catalogued entries**, and **Migrated + Unmigrated
 entries** gives the same total. Diagnostic counts are overlapping subsets,
-not additional services. Entries planned for a move or split can still be
-configured runtime services with dependency, readiness and lifetime contracts.
+not additional services.
 
 Per-service reports show inventory notes before the migration assessments, so
 planned ownership changes are visible alongside earlier assessments. Notes are
@@ -168,6 +169,8 @@ also included in JSON output as `entry.notes`.
 Entries found by the audit but absent from the inventory are **Not inventoried**;
 entries absent from the dependency graph have unknown counts. Malformed or
 incomplete assessments fail the report.
+The `not-analyzed` and `not-inventoried` diagnostic counts are available in
+summary JSON and list filters, but omitted from the text summary.
 
 `list` counts distinct disallowed dependency targets per entry, with unresolved
 and own-root imports in separate columns. `dependencies` counts distinct

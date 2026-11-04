@@ -8,7 +8,7 @@ const SubscriptionEventService = require('./services/webhook/subscription-event-
 const InvoiceEventService = require('./services/webhook/invoice-event-service');
 const CheckoutSessionEventService = require('./services/webhook/checkout-session-event-service');
 const ChargeRefundedEventService = require('./services/webhook/charge-refunded-event-service');
-const memberWelcomeEmailService = require('../member-welcome-emails/service');
+const memberWelcomeEmails = require('../member-welcome-emails').default;
 const metafields = require('../members-metafields');
 
 /**
@@ -37,7 +37,7 @@ module.exports = class StripeService {
   /**
    * @param {object} deps
    * @param {*} deps.labs
-   * @param {import('../../lib/tracing/tracer').Tracer} deps.tracer
+   * @param {import('./tracking').StripeTracking} deps.tracking
    * @param {*} deps.membersService
    * @param {*} deps.donationService
    * @param {*} deps.giftService
@@ -54,7 +54,7 @@ module.exports = class StripeService {
    */
   constructor({
     labs,
-    tracer,
+    tracking,
     membersService,
     donationService,
     giftService,
@@ -63,7 +63,7 @@ module.exports = class StripeService {
     settingsCache,
     models,
   }) {
-    const api = new StripeAPI({ labs, tracer });
+    const api = new StripeAPI({ labs, tracking });
 
     const webhookManager = new WebhookManager({
       StripeWebhook,
@@ -115,7 +115,7 @@ module.exports = class StripeService {
         return giftService.service;
       },
       get staffServiceEmails() {
-        return staffService.api.emails;
+        return staffService.service.emails;
       },
       sendSignupEmail(email) {
         return membersService.api.sendEmailWithMagicLink({
@@ -127,9 +127,9 @@ module.exports = class StripeService {
           tokenData: {},
         });
       },
+      // Read at call time: Member welcome emails initializes later in boot than this service.
       async isPaidWelcomeEmailActive() {
-        memberWelcomeEmailService.init();
-        return memberWelcomeEmailService.api.isMemberWelcomeEmailActive('paid');
+        return memberWelcomeEmails.service.isMemberWelcomeEmailActive('paid');
       },
       labs,
       // Getters, because these services are built later in boot than this one.

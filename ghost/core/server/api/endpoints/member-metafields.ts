@@ -1,5 +1,5 @@
 import type { Controller, Frame } from '@tryghost/api-framework';
-import { ADMIN, actingContext, definitions, namespaces } from '../../services/members-metafields';
+import { ADMIN, actingContext, booted } from '../../services/members-metafields';
 import { fieldRoute, namespaceRoute } from '../../services/members-metafields/serializers';
 
 const permissionsService = require('../../services/permissions');
@@ -37,7 +37,7 @@ type WriteFrame = Frame<{
  * applies.
  */
 async function canManage(frame: ReadFrame, action: 'add' | 'edit' | 'destroy', key?: string) {
-  const { owner } = namespaces!.owned(namespaceRoute(frame.options).namespace);
+  const { owner } = booted().namespaces.owned(namespaceRoute(frame.options).namespace);
   return permissionsService.canThis(frame.options.context)[action][owner.staff](key);
 }
 
@@ -52,7 +52,7 @@ const controller = {
     validation: { options: { namespace: { required: true } } },
     permissions: false,
     query(frame: ReadFrame) {
-      return definitions!.browse(
+      return booted().definitions.browse(
         { ...namespaceRoute(frame.options), filter: frame.options.filter },
         ADMIN,
       );
@@ -66,7 +66,19 @@ const controller = {
     permissions: false,
     query(frame: ReadFrame) {
       const { namespace, key } = fieldRoute(frame.options);
-      return definitions!.read(namespace, key, ADMIN);
+      return booted().definitions.read(namespace, key, ADMIN);
+    },
+  },
+
+  // Reading the values members hold needs the permission to browse members, because the values
+  // say something about the members who hold them.
+  browseValues: {
+    headers: noCacheInvalidation,
+    options: ['namespace', 'key'],
+    validation: { options: { namespace: { required: true }, key: { required: true } } },
+    permissions: { docName: 'member', method: 'browse' },
+    query(frame: ReadFrame) {
+      return booted().values.heldValues(fieldRoute(frame.options));
     },
   },
 
@@ -79,7 +91,7 @@ const controller = {
       return canManage(frame, 'add');
     },
     query(frame: WriteFrame) {
-      return definitions!.add(
+      return booted().definitions.add(
         actingContext(frame.options.context),
         namespaceRoute(frame.options).namespace,
         frame.data.members_metafields,
@@ -95,7 +107,7 @@ const controller = {
       return canManage(frame, 'edit');
     },
     query(frame: WriteFrame) {
-      return definitions!.reorder(
+      return booted().definitions.reorder(
         actingContext(frame.options.context),
         namespaceRoute(frame.options).namespace,
         frame.data.members_metafields,
@@ -112,7 +124,7 @@ const controller = {
     },
     query(frame: WriteFrame) {
       const { namespace, key } = fieldRoute(frame.options);
-      return definitions!.edit(
+      return booted().definitions.edit(
         actingContext(frame.options.context),
         namespace,
         key,
@@ -131,13 +143,14 @@ const controller = {
     },
     async query(frame: WriteFrame) {
       const { namespace, key } = fieldRoute(frame.options);
-      await definitions!.destroy(actingContext(frame.options.context), namespace, key);
+      await booted().definitions.destroy(actingContext(frame.options.context), namespace, key);
       return null;
     },
   },
 } satisfies Controller<{
   browse: ReadFrame;
   read: ReadFrame;
+  browseValues: ReadFrame;
   add: WriteFrame;
   reorder: WriteFrame;
   edit: WriteFrame;
