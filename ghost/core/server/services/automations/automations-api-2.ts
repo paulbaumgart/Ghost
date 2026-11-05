@@ -6,6 +6,7 @@ import type {
   AutomationsRepository2,
   RunStepToInsert,
   RunToInsert,
+  TrackEmailClickedOptions,
 } from './automations-repository-2';
 import { StartAutomationsPollEvent } from './events/start-automations-poll-event';
 import { getReadyAtForAction } from './util/get-ready-at-for-action';
@@ -44,10 +45,8 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
         async (connection) => await repository.getNumberOfAutomations(connection),
       ),
 
-    requestPoll,
-
-    trigger: async (
-      input: ReadonlyDeep<
+    notify: async (
+      event: ReadonlyDeep<
         {
           source: 'member' | 'admin' | 'api' | 'import' | 'system';
           memberEmail: string;
@@ -55,9 +54,9 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
           memberStatus: MemberStatus;
           memberTierIds: string[];
         } & (
-          | { event: 'membership_started'; previousMemberStatus: MemberStatus | null }
+          | { eventName: 'membership_started'; previousMemberStatus: MemberStatus | null }
           | {
-              event: 'paid_subscription_changed';
+              eventName: 'paid_subscription_changed';
               previousMemberStatus: MemberStatus;
               previousMemberTierIds: string[];
             }
@@ -65,20 +64,20 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
       >,
     ): Promise<void> => {
       const {
-        event,
+        eventName,
         source,
         memberEmail,
         memberId,
         memberStatus,
         memberTierIds,
         previousMemberStatus,
-      } = input;
+      } = event;
 
       // TypeScript makes this impossible in theory, but in practice there are
       // untyped callers (and TypeScript doesn't have a sound type system
       // anyway). This check is defense-in-depth.
-      if (event !== 'membership_started' && event !== 'paid_subscription_changed') {
-        throw new errors.IncorrectUsageError({ message: 'Unsupported automation trigger event.' });
+      if (eventName !== 'membership_started' && eventName !== 'paid_subscription_changed') {
+        throw new errors.IncorrectUsageError({ message: 'Unsupported automation event.' });
       }
 
       if (!labs.isSet('automations')) {
@@ -90,13 +89,13 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
       }
 
       let findFirstActionOptions: Parameters<typeof repository.findFirstActionRevisions>[1];
-      switch (event) {
+      switch (eventName) {
         case 'membership_started':
           if (memberStatus === 'paid' && previousMemberStatus === 'gift') {
             return;
           }
           findFirstActionOptions = {
-            event,
+            eventName,
             memberStatus: memberStatus === 'gift' ? 'paid' : memberStatus,
             memberTierIds,
           };
@@ -106,22 +105,22 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
           if (!hadPaidAccess) {
             return;
           }
-          const lostTierAccess = input.previousMemberTierIds.some(
+          const lostTierAccess = event.previousMemberTierIds.some(
             (id) => !memberTierIds.includes(id),
           );
           if (!lostTierAccess) {
             return;
           }
           findFirstActionOptions = {
-            event,
+            eventName,
             memberStatus: memberStatus === 'gift' ? 'paid' : memberStatus,
             memberTierIds,
-            previousMemberTierIds: input.previousMemberTierIds,
+            previousMemberTierIds: event.previousMemberTierIds,
           };
           break;
         }
         default: {
-          const _exhaustive: never = event;
+          const _exhaustive: never = eventName;
           throw new errors.IncorrectUsageError({
             message: `Unexpected automation event: ${_exhaustive}`,
           });
@@ -182,6 +181,40 @@ export const createAutomationsApi2 = <RepositoryTransaction>({
       if (didEnroll) {
         requestPoll();
       }
+    },
+
+    requestPoll,
+
+    trackEmailClicked: async (
+      {
+        automationActionRevisionId,
+        automationRunStepId,
+        memberId,
+        clickedAt,
+      }: TrackEmailClickedOptions,
+      { connection }: { connection: RepositoryTransaction },
+    ): Promise<void> => {
+      await repository.lockActionRevisions(connection, [automationActionRevisionId]);
+
+      const recipient = await repository.findEmailRecipientForClick(connection, {
+        automationActionRevisionId,
+        automationRunStepId,
+        memberId,
+      });
+      if (!recipient || recipient.clicked_at !== null) {
+        return;
+      }
+
+      const updated = await repository.setEmailRecipientClickedAt(
+        connection,
+        recipient.id,
+        clickedAt,
+      );
+      if (!updated) {
+        return;
+      }
+
+      await repository.incrementEmailClickedCount(connection, automationActionRevisionId);
     },
   };
 };

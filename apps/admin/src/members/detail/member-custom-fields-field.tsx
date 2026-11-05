@@ -45,6 +45,7 @@ import {
   type TextSize,
 } from '@tryghost/metafield-types/structure';
 import { partOf } from '@/members/custom-fields/addressing';
+import { useFeatureFlag } from '@tryghost/admin-x-framework/hooks';
 import {
   formatMemberCustomFieldValue,
   memberCustomFieldIdentity,
@@ -254,7 +255,13 @@ const RecordInput: React.FC<{
       const partId = `${inputId}-${part}`;
       const error = errors?.[part];
       return (
-        <div key={part} className={cn('flex flex-col gap-1.5', fullRow && 'md:col-span-2')}>
+        <div
+          key={part}
+          className={cn(
+            'flex flex-col gap-1.5 in-data-[admin7-design=true]:gap-2',
+            fullRow && 'md:col-span-2',
+          )}
+        >
           <Label htmlFor={partId}>{label}</Label>
           <LeafInput
             disabled={disabled}
@@ -482,7 +489,7 @@ const MemberCustomFieldEditModal: React.FC<{
 // select-text: button text is unselectable by default, and values (addresses especially) get
 // copied.
 const TextValue: React.FC<{ text: string }> = ({ text }) => (
-  <span className="block break-words select-text">{text}</span>
+  <span className="block break-words select-text in-data-[admin7-design=true]:text-md">{text}</span>
 );
 
 // A list's answers as the chips its editor shows, since an option can hold a comma and a
@@ -513,7 +520,9 @@ const CustomFieldValue: React.FC<{ field: MemberCustomField; stored: unknown }> 
 }) => {
   const text = formatMemberCustomFieldValue(field, stored);
   if (!text) {
-    return <span className="block text-muted-foreground">–</span>;
+    return (
+      <span className="block text-muted-foreground in-data-[admin7-design=true]:text-md">–</span>
+    );
   }
   return matchShape<React.ReactElement>(field.type, {
     scalar: () => <TextValue text={text} />,
@@ -544,6 +553,7 @@ const MemberCustomFieldsField: React.FC<MemberCustomFieldsFieldProps> = ({
   metafields,
   disabled,
 }) => {
+  const admin7Design = useFeatureFlag('admin7Design');
   const { data, isLoading } = useCustomFieldDefinitions();
   const fields = data ?? [];
   const values = getEditableCustomFieldValues(metafields, fields);
@@ -559,14 +569,14 @@ const MemberCustomFieldsField: React.FC<MemberCustomFieldsFieldProps> = ({
       className="flex flex-col gap-3"
       data-testid="member-custom-fields-field"
     >
-      <h3 className="text-base font-semibold" id="member-custom-fields-heading">
+      <h3 className="section-heading text-base font-semibold" id="member-custom-fields-heading">
         Custom fields
       </h3>
-      <Card>
+      <Card variant={admin7Design ? 'ruled' : 'outline'}>
         {/* Rows are uniform (py-3, no first/last trims) so hover chips are all
                     the same height; the card's vertical padding is what gives the
                     first and last chips breathing room from the card edge. */}
-        <CardContent className="px-6 py-4">
+        <CardContent className={admin7Design ? 'pt-3' : 'px-6 py-4'}>
           <ul>
             {fields.map((field) => {
               const stored = metafields?.[field.namespace]?.[field.key];
@@ -591,7 +601,7 @@ const MemberCustomFieldsField: React.FC<MemberCustomFieldsFieldProps> = ({
                     // -mx/px + calc width: the hover tint bleeds past the text
                     // column like the settings rows, while the row text (and the
                     // li dividers) stay aligned with the rest of the card.
-                    className="group -mx-3 flex w-[calc(100%+1.5rem)] items-center justify-between gap-4 rounded-md p-3 text-left transition-colors hover:bg-table-row-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    className="group -mx-3 flex w-[calc(100%+1.5rem)] items-center justify-between gap-4 rounded-md p-3 text-left transition-colors hover:bg-table-row-hover disabled:cursor-not-allowed disabled:opacity-50 in-data-[admin7-design=true]:py-4"
                     disabled={disabled}
                     type="button"
                     onClick={() => {
@@ -605,7 +615,9 @@ const MemberCustomFieldsField: React.FC<MemberCustomFieldsFieldProps> = ({
                     }}
                   >
                     <span className="min-w-0">
-                      <span className="block text-sm text-muted-foreground">{field.name}</span>
+                      <span className="block text-sm text-muted-foreground in-data-[admin7-design=true]:text-base">
+                        {field.name}
+                      </span>
                       <CustomFieldValue field={field} stored={stored} />
                     </span>
                     <LucideIcon.Pen
