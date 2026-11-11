@@ -33,7 +33,7 @@ const GA_FEATURES = [
   'automationsLifecycleTriggers',
   'selfServeArchives',
   'admin7EditorImprovements',
-  'stripeCheckoutDesign',
+  'membersCustomFields',
 ];
 
 // These features are considered publicly available and can be enabled/disabled by users
@@ -58,7 +58,6 @@ const PRIVATE_FEATURES = [
   'themeTranslation',
   'pictureImageFormats',
   'getHelperDeduplication',
-  'membersCustomFields',
   'stripeCheckoutCollection',
   'paywallImprovements',
   'machinePayments',

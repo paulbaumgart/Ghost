@@ -64,9 +64,7 @@ async function openCheckoutFields(
     checkout_config: [config],
   });
   const allLabs = {
-    stripeCheckoutDesign: true,
     stripeCheckoutCollection: true,
-    membersCustomFields: true,
     ...labs,
   };
   const siteConfig = configResponse({ labs: allLabs });
@@ -573,7 +571,7 @@ describe('Checkout settings', () => {
       checkout_config: [{ design: { customize: false } }],
     });
     await renderAdminApp('/settings/tiers/checkout', {
-      labs: { stripeCheckoutDesign: true, stripeCheckoutCollection: true },
+      labs: { stripeCheckoutCollection: true },
       boot: { browseSettings: { response: stripeSettings() } },
     });
 
@@ -615,7 +613,6 @@ describe('Checkout settings', () => {
       checkout_branding: [{ display_name: 'Dummy', design: null }],
     });
     await renderAdminApp('/settings/tiers/checkout', {
-      labs: { stripeCheckoutDesign: true },
       boot: { browseSettings: { response: stripeSettings() } },
     });
 
