@@ -58,6 +58,52 @@ For example:
 Relocation does not resolve resource ownership by itself. If a supporting
 client acquires resources, its owner must still arrange any necessary cleanup.
 
+## Creating a service
+
+After checking [what belongs here](#what-belongs-here), run:
+
+```sh
+pnpm gx generate service delivery-receipts
+```
+
+The generator creates `index.ts`, a separate `delivery-receipts-service.ts`
+implementation, and `ghost/test/unit/server/services/delivery-receipts/index.test.ts`.
+The root default-exports `defineService` and injects logging. Commented examples
+show where models, settings, config, DomainEvents and other service instances
+belong. Import allowlisted libraries directly in the implementation; use
+`GhostLogger` for its injected logging type.
+
+The inventory entry uses `migrated: true`, and the root is added to Oxlint's
+configured paths, so both root-shape and dependency checks apply immediately.
+Its audit remains `pending`: the scaffold does not establish the capability's
+contracts. The initial `migration.reviewedAt` records the generator checkout
+revision, as its reason explains; review the implemented source before recording
+audit evidence.
+
+Complete the steps printed by the command:
+
+1. Implement the capability and wire only its required dependencies in the root.
+   Preserve live settings reads and explain any deferred dependency lookups.
+2. Add and await `require('./server/services/delivery-receipts').default.init()`
+   in `ghost/core/boot.js`, after its dependencies are ready and before its
+   consumers run. Document those requirements above `defineService`. Consumers
+   read `.service` after initialization.
+3. Await required startup work before returning the instance. If startup can
+   fail after acquiring resources, clean them up before rethrowing. Arrange
+   normal shutdown separately when needed.
+4. Extend the starter test with behavior, dependency timing, and failure/retry
+   coverage. Record the implemented inventory contracts and resolve its blockers.
+5. Run the generated root test and the repository checks:
+
+   ```sh
+   pnpm nx run ghost:test:unit test/unit/server/services/delivery-receipts/index.test.ts
+   pnpm check
+   ```
+
+The generator rejects invalid names and existing service or test paths. See the
+[gx guide](../../../../tools/gx/README.md#service-generator) for command details and
+[initialization](#initialization) below for readiness and resource ownership.
+
 ## Implementation and migration
 
 The definition above guides new roots and directory cleanup. Existing roots
@@ -138,9 +184,12 @@ has got. Keep each dependency's existing timing:
 Type injected logging as `GhostLogger`, or a `Pick<GhostLogger, ...>` of the
 methods used, with `import type { GhostLogger } from '@tryghost/logging'`. In
 JSDoc, use `import('@tryghost/logging').GhostLogger`. Do not hand-write a logger
-shape; `ghost/prefer-canonical-types` rejects one in Ghost Core whatever it is
-named. Class tests pass `createLoggingFake()` from `ghost/test/utils/logging-utils`
-and assert on its stubs instead of stubbing the global logger.
+shape; `ghost/prefer-canonical-types` rejects one in Ghost Core and its tests
+whatever it is named, and rejects `object` or `any` on an injected logger. Class
+tests pass `createLoggingFake()` from `ghost/test/utils/logging-utils` and assert
+on its stubs instead of stubbing the global logger;
+`ghost/no-real-logger-injection` rejects passing the real one. Exported service
+types may not contain `any`.
 
 Where JavaScript has a matching TypeScript sibling, the audit and boundary
 checks inspect the TypeScript source and resolve imports back to it. This keeps
